@@ -1,0 +1,514 @@
+# Tauri Engineering Rules
+
+This file is the repository-level source of truth for coding-agent behavior.
+
+Tool-specific instruction files should reference this source instead of
+duplicating repository rules.
+
+Keep this file high-signal. It should document recurring traps, architectural
+invariants, and delivery policy rather than implementation maps or temporary
+project details.
+
+Detailed architecture, setup instructions, command matrices, and subsystem
+documentation should live in maintained project documentation.
+
+## Sources of truth
+
+* Repository-level agent rules and delivery policy belong in this file.
+* Architecture documentation owns the current implementation map.
+* Development documentation owns toolchain setup, commands, and local workflows.
+* Feature or design documentation owns feature-specific behavior and decisions.
+* Historical documentation must not be treated as current implementation
+  authority.
+* When maintained documentation and code disagree, verify actual behavior before
+  editing and update stale maintained documentation as part of the same change.
+
+## Change discipline
+
+* Prioritize correctness and clarity over premature optimization.
+* Keep changes scoped to the requested task.
+* Do not introduce unrelated refactors, abstractions, dependencies, features,
+  compatibility layers, or architectural changes.
+* Preserve existing behavior during refactors unless the task explicitly changes
+  behavior.
+* Prefer modifying an existing module when the responsibility already belongs
+  there.
+* Create a new module only when it introduces a distinct responsibility or
+  materially improves a real architectural boundary.
+* Do not split code merely to satisfy line-count targets. Treat large functions
+  or files as review signals, not automatic reasons to fragment cohesive code.
+* Comments should explain non-obvious reasoning, invariants, constraints, or
+  trade-offs rather than restating the code.
+* Avoid creative additions that were not requested.
+
+## Architecture
+
+* Keep business and domain logic independent of Tauri command handlers and UI
+  components.
+* Keep dependencies flowing toward domain and application logic rather than
+  toward UI or framework layers.
+* Avoid duplicate sources of truth, mirrored state models, god modules, and
+  circular dependencies.
+* Domain code must not depend on UI components or framework-specific state.
+* Application and service layers must not depend on views or presentation-layer
+  components.
+* Keep framework-specific adapters at architectural boundaries.
+* Prefer explicit ownership of state rather than maintaining synchronized copies
+  across Rust and the frontend.
+
+For state owned by the backend, the frontend should normally maintain only the
+projection or UI state required for presentation and interaction.
+
+## Rust
+
+* Use typed errors at domain, application, and infrastructure boundaries.
+* Prefer `thiserror` or equivalent typed error enums for project-owned error
+  contracts.
+* Do not use bare `String` or formatted prose as an internal error contract.
+* Avoid `unwrap()`, `expect()`, and `panic!()` in production paths unless a clear
+  and documented invariant makes failure impossible.
+* Prefer `?` when the caller can meaningfully handle or map an error.
+* Never silently discard a fallible operation with `let _ =`. Propagate, log, or
+  handle the failure intentionally.
+* Do not convert meaningful failures into `None`, `false`, empty collections, or
+  generic success-like values merely to simplify call sites.
+* Avoid unchecked indexing when bounds depend on runtime or external input.
+* Prefer descriptive names over ambiguous abbreviations. Established ecosystem
+  and domain abbreviations such as `id`, `url`, `db`, `io`, `tx`, and `rx` are
+  acceptable when their meaning is clear.
+* Prefer `foo.rs` with `foo/...` submodules over introducing new `foo/mod.rs`
+  module roots.
+* Keep ownership and lifetime relationships straightforward when possible.
+* Avoid unnecessary cloning merely to satisfy the borrow checker when a clearer
+  ownership model is available.
+
+### Async and blocking work
+
+* Do not hold synchronous or asynchronous locks across `.await`, filesystem I/O,
+  network requests, database operations, sleeps, model loading, inference, or
+  other long-running work unless the locking semantics explicitly require it.
+* Snapshot the minimum state required under a lock, release the lock, then
+  perform expensive work.
+* Do not execute CPU-intensive or blocking work directly on an asynchronous
+  runtime worker.
+* Use `spawn_blocking`, a dedicated worker, or the project's established
+  equivalent for blocking or CPU-bound workloads.
+* Keep asynchronous functions genuinely asynchronous. Do not mark functions
+  `async` merely because their callers are async.
+
+## Tauri commands
+
+Tauri commands are transport adapters, not the application layer.
+
+Commands should primarily:
+
+1. parse and validate IPC input;
+2. call application or domain code;
+3. map results into explicit IPC DTOs;
+4. map errors into the public IPC error representation;
+5. emit application events when necessary.
+
+Do not place long workflows, filesystem orchestration, duplicated business
+validation, database logic, or domain behavior directly inside command handlers.
+
+Prefer roughly:
+
+```text
+Frontend
+    ↓
+Tauri command
+    ↓
+Application / service layer
+    ↓
+Domain / infrastructure
+```
+
+rather than:
+
+```text
+Frontend
+    ↓
+Large Tauri command containing business logic
+```
+
+## IPC boundaries
+
+* Treat the Tauri IPC boundary as a public interface inside the application.
+* Use explicit serializable request and response DTOs.
+* Do not expose internal implementation types merely because they implement
+  `Serialize`.
+* Keep IPC contracts stable and intentional.
+* Prefer structured data over formatted strings.
+* Validate untrusted or externally controlled input at the boundary.
+* Avoid exposing unnecessary filesystem paths, implementation details, secrets,
+  or internal state through IPC.
+* Keep large datasets and expensive computation on the Rust side when practical
+  instead of repeatedly transferring them across IPC.
+
+### Commands, events, and channels
+
+Use the IPC mechanism appropriate for the communication pattern:
+
+* Commands for request/response operations.
+* Events for occasional asynchronous state changes.
+* Channels, streams, or worker-style communication for ordered or
+  high-frequency data.
+
+Do not build high-frequency streaming protocols from large numbers of ordinary
+events when a streaming mechanism is more appropriate.
+
+## IPC errors
+
+Errors crossing the Tauri boundary must remain useful and machine-readable.
+
+* Map typed backend errors once at the IPC boundary.
+* Use stable error identifiers or codes for behavior the frontend needs to
+  distinguish.
+* Carry safe structured context when it improves diagnosis or presentation.
+* Do not encode error identity into formatted strings and later parse those
+  strings on the frontend.
+* Do not replace meaningful backend failures with `None`, `false`, empty
+  collections, or generic errors merely to simplify frontend handling.
+* Do not expose secrets or sensitive internal details in IPC error payloads.
+* Prefer frontend-owned localization and presentation when applications support
+  multiple languages.
+
+A useful conceptual model is:
+
+```text
+DomainError
+    ↓
+ApplicationError
+    ↓
+IPC Error DTO
+    ↓
+Frontend presentation
+```
+
+rather than:
+
+```text
+formatted backend string
+    ↓
+frontend string parsing
+```
+
+## Diagnostics and logging
+
+* Use a single structured diagnostic pipeline where practical.
+* Prefer Rust `tracing` for backend diagnostics.
+* Logs are diagnostic information, not application state.
+* Logs must never drive business logic or application workflows.
+* Do not log secrets, authentication tokens, passwords, connection strings, or
+  equivalent sensitive information.
+* Avoid logging large user payloads such as document contents, database rows,
+  clipboard contents, or complete request bodies unless explicitly required and
+  safely sanitized.
+* Use appropriate log levels.
+* Add enough structured context to diagnose failures without exposing sensitive
+  data.
+* User-facing errors and diagnostic logs serve different purposes and should not
+  be treated as interchangeable.
+
+## React and TypeScript
+
+* Keep backend-owned domain state backend-authoritative.
+* Keep frontend stores focused on UI state, frontend runtime state, caching, or
+  projections required by the interface.
+* Avoid maintaining duplicate authoritative state on both sides of the IPC
+  boundary.
+* Keep stores domain-scoped rather than creating a single global god store.
+* Subscribe to stores with narrow selectors when supported.
+* Put multi-step application workflows in application hooks or services rather
+  than presentation components.
+* Keep presentation components focused on rendering and interaction.
+* Keep Tauri invocation behind a service or API layer rather than scattering
+  direct `invoke` calls throughout views.
+* Centralize common IPC serialization, error mapping, and command invocation
+  behavior.
+* Use the router as the authority for navigable page state when the application
+  uses routing.
+* Persist cross-session preferences using an appropriate persistence layer.
+* Keep temporary UI/runtime state in memory unless persistence is explicitly
+  required.
+* Do not use `any` to bypass type errors. Prefer explicit types or `unknown` with
+  proper narrowing.
+* Keep boundary types explicit when receiving data from Rust, external APIs, or
+  untyped sources.
+
+## Frontend services
+
+Views should not know unnecessary details about Tauri IPC.
+
+Prefer:
+
+```ts
+// view / hook
+await projectService.openProject(path);
+```
+
+over:
+
+```ts
+// view
+await invoke("open_project", { path });
+```
+
+The service layer is responsible for details such as:
+
+* command names;
+* request serialization;
+* response types;
+* shared IPC error handling;
+* compatibility with backend DTOs.
+
+This makes IPC contracts easier to audit and prevents framework details from
+spreading through presentation code.
+
+## UI components
+
+* Prefer composing the project's existing component primitives over
+  implementing equivalent interaction primitives locally.
+* Avoid adding another general-purpose UI library solely for one component.
+* Maintain consistent keyboard, accessibility, focus, and disabled-state
+  behavior.
+* Separate reusable interaction primitives from domain-specific presentation.
+* Keep global browser listeners centralized when multiple features depend on
+  them.
+* Clean up subscriptions, listeners, timers, and asynchronous effects when
+  components unmount.
+
+## Filesystem and paths
+
+Desktop applications frequently operate on user-controlled filesystem paths.
+
+* Treat filesystem input as untrusted.
+* Use `Path` and `PathBuf` instead of manually concatenating path strings.
+* Avoid assumptions about path separators.
+* Do not assume paths contain valid UTF-8 unless the application contract
+  explicitly guarantees it.
+* Canonicalize paths only when canonicalization semantics are actually required.
+* Be aware that canonicalization resolves symlinks and requires targets to exist.
+* Avoid time-of-check/time-of-use assumptions for externally mutable files.
+* Handle missing, inaccessible, renamed, and concurrently modified files as
+  ordinary errors.
+* Do not silently overwrite user files without explicit application semantics.
+
+## Networking
+
+When the application performs network requests:
+
+* Keep networking logic outside Tauri command handlers.
+* Define explicit request and response types.
+* Use reasonable timeouts.
+* Treat remote responses as untrusted input.
+* Preserve meaningful network error context.
+* Avoid retry loops without limits or backoff.
+* Make cancellation possible for long-running operations when practical.
+* Do not expose credentials or API keys to the frontend unless they are intended
+  to be public.
+* Prefer performing privileged authenticated requests on the backend.
+
+## Resource lifecycle
+
+Desktop applications often own resources that outlive individual commands.
+
+Examples include:
+
+* file watchers;
+* database connections;
+* subprocesses;
+* network clients;
+* background workers;
+* channels;
+* model runtimes.
+
+For long-lived resources:
+
+* Define clear ownership.
+* Define startup and shutdown behavior.
+* Avoid spawning untracked background tasks.
+* Avoid resource leaks when windows or application state are destroyed.
+* Make cancellation and shutdown explicit where appropriate.
+* Do not allow stale asynchronous work to mutate state after its owning resource
+  has been replaced or destroyed.
+
+## Concurrency
+
+* Make ownership of mutable shared state explicit.
+* Prefer message passing or narrow synchronization boundaries over large shared
+  mutable objects when appropriate.
+* Keep critical sections small.
+* Avoid nested locks unless the lock ordering is explicit and stable.
+* Never depend on incidental scheduling order for correctness.
+* Assume filesystem watchers, IPC requests, network callbacks, and background
+  workers may race with each other.
+* Protect state transitions with application-level invariants rather than timing
+  assumptions.
+
+## Security
+
+Tauri reduces the exposed browser surface but does not remove the need for
+application security.
+
+* Expose only commands required by the frontend.
+* Validate arguments before performing privileged operations.
+* Follow the principle of least privilege for Tauri permissions and
+  capabilities.
+* Do not enable plugins or capabilities globally when only one window or feature
+  requires them.
+* Treat URLs, shell arguments, filesystem paths, and external process input as
+  untrusted.
+* Do not construct shell command strings from user input.
+* Prefer structured process arguments.
+* Never embed production secrets in frontend bundles.
+* Review newly introduced plugins and native dependencies for the privileges
+  they require.
+
+## Dependencies
+
+* Do not add a dependency when the standard library or an existing project
+  dependency provides a clear solution.
+* Add dependencies only for a concrete requirement.
+* Prefer mature, maintained libraries with narrow responsibilities.
+* Avoid introducing overlapping libraries that solve the same problem.
+* Review feature flags instead of enabling broad default feature sets when they
+  substantially increase build size or attack surface.
+* Keep platform-specific dependencies isolated when possible.
+* Remove dependencies that become unused after a change.
+
+## Test discipline
+
+* Add the smallest focused regression test that proves the requested behavior or
+  reproduces the reported bug.
+* Prefer one representative test per distinct project-owned contract or failure
+  mode.
+* Test through stable public seams rather than private implementation details.
+* Do not add tests at unrelated or unconfirmed seams.
+* Do not add speculative edge-case matrices or duplicate coverage without a
+  demonstrated regression risk.
+* Before adding several similar tests, identify the distinct failure each test
+  catches.
+* For behavior-preserving refactors, rely on existing coverage unless current
+  coverage cannot establish the preserved contract.
+* Do not test behavior owned entirely by Rust, React, Tauri, the type system, or
+  another third-party dependency.
+* When changing observable behavior, add or update a focused regression test
+  before the implementation change when practical.
+
+### Rust tests
+
+Prefer testing domain and application code without starting a Tauri runtime.
+
+Keep framework-dependent integration tests limited to behavior that actually
+depends on Tauri.
+
+### Frontend tests
+
+Prefer testing user-observable behavior and application contracts rather than
+component implementation details.
+
+Mock the IPC/service boundary rather than reproducing backend internals inside
+frontend tests.
+
+## Validation
+
+* Use repository-level scripts as stable task entry points when available.
+* During iteration, run the smallest focused validation that establishes the
+  correctness of the current change.
+* After a coherent Rust change, run relevant formatting, checking, linting, and
+  focused tests.
+* After a coherent frontend change, run relevant formatting, type checking,
+  linting, and focused tests.
+* Run full validation when the change crosses architectural boundaries or is
+  broad enough to justify it.
+* Run `git diff --check` before reporting completion.
+* Do not claim checks or tests succeeded without fresh command output.
+* Preserve unrelated user changes in the working tree.
+* Do not perform unrelated repository-wide formatting.
+* Do not hardcode repository-wide Cargo build-job or test-thread limits unless
+  the project explicitly requires them.
+
+Typical validation categories include:
+
+```text
+Frontend formatting
+Frontend type checking
+Frontend linting
+Frontend tests
+
+Rust formatting
+cargo check
+clippy
+Focused Rust tests
+
+Integration / end-to-end checks
+git diff --check
+```
+
+The repository should define the exact commands rather than duplicating them in
+this rules document.
+
+## Git discipline
+
+* Keep commits and diffs scoped to the requested work.
+* Do not modify unrelated files merely to clean them up.
+* Preserve unrelated working-tree changes.
+* Do not rewrite user-authored changes unless required by the task.
+* Avoid repository-wide formatting as part of an unrelated feature or fix.
+* Review the final diff for accidental generated files, debug output, secrets,
+  or temporary artifacts.
+* Do not claim a clean or passing state without verifying it.
+
+## Documentation
+
+Update maintained documentation when a change makes it inaccurate.
+
+Do not duplicate implementation details across multiple documents when one
+source of truth is sufficient.
+
+Architecture documentation should describe:
+
+* responsibilities;
+* boundaries;
+* important data flows;
+* invariants;
+* significant design decisions.
+
+Repository rules should not become an exhaustive architecture manual.
+
+## Rules hygiene
+
+These rules are read repeatedly by coding agents, so keep them high-signal.
+
+Rules should primarily document traps to avoid and invariants that are difficult
+to infer reliably from the codebase.
+
+Do not fill the repository rules with:
+
+* directory inventories;
+* current UI composition;
+* exhaustive command lists;
+* temporary implementation details;
+* generated architecture maps;
+* historical project context;
+* information that can be trivially discovered from the code.
+
+A new repository rule should normally satisfy three criteria:
+
+1. **Non-obvious** — a competent contributor could reasonably get it wrong
+   without an explicit rule.
+2. **Repeated or proven** — the issue has occurred repeatedly or represents a
+   validated failure mode with meaningful consequences.
+3. **Actionable** — the rule defines a concrete instruction, invariant, or
+   prohibited pattern.
+
+Do not add rules merely because something was observed once.
+
+Rules that apply only to a narrow subsystem should live near that subsystem
+when local instructions are necessary rather than continually expanding the
+repository root rules.
+
+If a rule becomes ordinary architecture documentation, implementation detail,
+or historical context, move it to the appropriate maintained documentation
+instead of leaving stale information here.

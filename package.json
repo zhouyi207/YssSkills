@@ -4,10 +4,24 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri"
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "check": "pnpm check:ts && pnpm check:rs",
+    "check:ts": "tsc --noEmit",
+    "check:rs": "cargo check --manifest-path src-tauri/Cargo.toml --workspace",
+    "lint": "pnpm lint:ts && pnpm lint:rs",
+    "lint:ts": "oxlint .",
+    "lint:rs": "cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --all-features -- -D warnings",
+    "test": "pnpm test:ts && pnpm test:rs",
+    "test:ts": "vitest run",
+    "test:rs": "cargo test --manifest-path src-tauri/Cargo.toml --workspace",
+    "format": "pnpm format:ts && pnpm format:rs",
+    "format:ts": "oxfmt",
+    "format:rs": "cargo fmt --manifest-path src-tauri/Cargo.toml --all",
+    "format:check": "pnpm format:check:ts && pnpm format:check:rs",
+    "format:check:ts": "oxfmt --check",
+    "format:check:rs": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check",
+    "ci": "pnpm format:check && pnpm check && pnpm lint && pnpm test"
   },
   "dependencies": {
     "react": "^19.1.0",
