@@ -1,17 +1,34 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import {
+  RiAddLine,
+  RiCheckboxMultipleLine,
   RiCommandLine,
   RiDatabase2Line,
+  RiDeleteBinLine,
+  RiDownloadLine,
   RiEditLine,
+  RiEyeLine,
   RiFileTextLine,
   RiRefreshLine,
   RiSearchLine,
   RiStackLine,
   RiTerminalLine,
+  RiUploadLine,
 } from "@remixicon/react";
+import ReactMarkdown from "react-markdown";
+import { toast } from "sonner";
 
+import { selectSkillExportPath, selectSkillFiles } from "@/app/services/file-picker";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -320,7 +337,7 @@ export const skills = [
   },
 ];
 
-const skillSets = [
+export const skillSets = [
   {
     name: "Reliable delivery",
     slug: "reliable-delivery",
@@ -341,11 +358,29 @@ const skillSets = [
   },
 ];
 
+type Skill = (typeof skills)[number];
+
 const skillSubtitleOverrides: Record<string, string> = {
   brainstorming: "obra/superpowers",
 };
 
-function getSkillSubtitle(slug: string) {
+function getSkillMarkdown(skill: Skill) {
+  return `## Overview
+
+${skill.description}
+
+## Details
+
+- **Source:** ${skill.source}
+- **Scope:** ${skill.scope}
+- **Status:** ${skill.status}
+- **Updated:** ${skill.updated}`;
+}
+
+function getSkillSubtitle(
+  slug: string,
+  skillSetItems: ReadonlyArray<{ slug: string; scope: string }> = skillSets,
+) {
   const override = skillSubtitleOverrides[slug];
   if (override) {
     return override;
@@ -356,7 +391,7 @@ function getSkillSubtitle(slug: string) {
     return skill.source;
   }
 
-  const skillSet = skillSets.find((candidate) => candidate.slug === slug);
+  const skillSet = skillSetItems.find((candidate) => candidate.slug === slug);
   return skillSet?.scope ?? "Skill set";
 }
 
@@ -370,12 +405,24 @@ function SkillList({
   items,
   selectedSlugs,
   onToggle,
+  onEdit,
+  onView,
+  skillSetItems = skillSets,
+  showSubtitle = true,
 }: {
   items: SkillListItem[];
   selectedSlugs: ReadonlySet<string>;
   onToggle: (slug: string, checked?: boolean) => void;
+  onEdit?: (slug: string) => void;
+  onView?: (slug: string) => void;
+  skillSetItems?: ReadonlyArray<{ slug: string; scope: string }>;
+  showSubtitle?: boolean;
 }) {
   const keepCheckboxesVisible = selectedSlugs.size > 0;
+  const isViewMode = onView !== undefined;
+  const action = onView ?? onEdit;
+  const actionLabel = isViewMode ? "View" : "Edit";
+  const ActionIcon = isViewMode ? RiEyeLine : RiEditLine;
 
   return (
     <div role="list" className="flex min-w-0 flex-col gap-2 text-xs/relaxed">
@@ -388,7 +435,7 @@ function SkillList({
             role="button"
             tabIndex={0}
             aria-pressed={isSelected}
-            className="group/skill-row mx-4 grid min-h-14 min-w-0 grid-cols-[1.5rem_minmax(0,1fr)_minmax(0,2fr)_2rem] items-center gap-3 border px-4 py-2 outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 lg:mx-6 lg:px-6"
+            className="group/skill-row mx-4 grid min-h-14 min-w-0 grid-cols-[1.5rem_minmax(0,1fr)_minmax(0,2fr)_2rem] items-center gap-3 border px-4 py-2 outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/50"
             onClick={() => onToggle(item.slug)}
             onKeyDown={(event) => {
               if (event.target !== event.currentTarget) {
@@ -415,21 +462,26 @@ function SkillList({
             </div>
             <div className="flex min-w-0 items-baseline gap-2">
               <span className="min-w-0 truncate font-medium">{item.name}</span>
-              <span className="max-w-32 shrink-0 truncate text-[0.65rem] text-muted-foreground">
-                {getSkillSubtitle(item.slug)}
-              </span>
+              {showSubtitle ? (
+                <span className="max-w-32 shrink-0 truncate text-[0.65rem] text-muted-foreground">
+                  {getSkillSubtitle(item.slug, skillSetItems)}
+                </span>
+              ) : null}
             </div>
             <div className="min-w-0 truncate text-muted-foreground">{item.description}</div>
             <Button
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label={`Edit ${item.name}`}
-              title={`Edit ${item.name}`}
+              aria-label={`${actionLabel} ${item.name}`}
+              title={`${actionLabel} ${item.name}`}
               className="justify-self-end"
-              onClick={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                action?.(item.slug);
+              }}
             >
-              <RiEditLine aria-hidden="true" />
+              <ActionIcon aria-hidden="true" />
             </Button>
           </div>
         );
@@ -441,6 +493,15 @@ function SkillList({
 export function SkillsPage() {
   const [query, setQuery] = useState("");
   const [selectedSlugs, setSelectedSlugs] = useState<Set<string>>(() => new Set());
+  const [skillSetItems, setSkillSetItems] = useState(skillSets);
+  const [activeTab, setActiveTab] = useState<"item" | "set">("item");
+  const [isSelectingSkillFiles, setIsSelectingSkillFiles] = useState(false);
+  const [isAddSetOpen, setIsAddSetOpen] = useState(false);
+  const [editingSetSlug, setEditingSetSlug] = useState<string | null>(null);
+  const [newSetTitle, setNewSetTitle] = useState("skill set");
+  const [newSetDescription, setNewSetDescription] = useState("");
+  const [newSetSkillSlugs, setNewSetSkillSlugs] = useState<Set<string>>(() => new Set());
+  const [viewingSkill, setViewingSkill] = useState<Skill | null>(null);
   const normalizedQuery = query.trim().toLowerCase();
 
   const toggleSelection = (slug: string, checked?: boolean) => {
@@ -458,6 +519,12 @@ export function SkillsPage() {
     });
   };
 
+  const handleTabChange = (value: string) => {
+    if (value === "item" || value === "set") {
+      setActiveTab(value);
+    }
+  };
+
   const filteredSkills = useMemo(() => {
     if (!normalizedQuery) {
       return skills;
@@ -472,30 +539,262 @@ export function SkillsPage() {
 
   const filteredSkillSets = useMemo(() => {
     if (!normalizedQuery) {
-      return skillSets;
+      return skillSetItems;
     }
 
-    return skillSets.filter((skillSet) =>
+    return skillSetItems.filter((skillSet) =>
       `${skillSet.name} ${skillSet.description} ${skillSet.skills.join(" ")} ${skillSet.scope}`
         .toLowerCase()
         .includes(normalizedQuery),
     );
-  }, [normalizedQuery]);
+  }, [normalizedQuery, skillSetItems]);
+
+  const selectableSlugs = [...filteredSkills, ...filteredSkillSets].map((item) => item.slug);
+  const allVisibleItemsSelected =
+    selectableSlugs.length > 0 && selectableSlugs.every((slug) => selectedSlugs.has(slug));
+
+  const toggleSelectAll = () => {
+    setSelectedSlugs((current) => {
+      const next = new Set(current);
+
+      selectableSlugs.forEach((slug) => {
+        if (allVisibleItemsSelected) {
+          next.delete(slug);
+        } else {
+          next.add(slug);
+        }
+      });
+
+      return next;
+    });
+  };
+
+  const handleImportSkills = async () => {
+    setIsSelectingSkillFiles(true);
+
+    try {
+      const selectedFiles = await selectSkillFiles();
+
+      if (selectedFiles.length > 0) {
+        toast.info(
+          `${selectedFiles.length} skill file${selectedFiles.length === 1 ? "" : "s"} selected.`,
+        );
+      }
+    } catch {
+      toast.error("Unable to open the skill import dialog.");
+    } finally {
+      setIsSelectingSkillFiles(false);
+    }
+  };
+
+  const handleExportSkills = async () => {
+    setIsSelectingSkillFiles(true);
+
+    try {
+      const exportPath = await selectSkillExportPath();
+
+      if (exportPath) {
+        toast.info("Export destination selected.");
+      }
+    } catch {
+      toast.error("Unable to open the skill export dialog.");
+    } finally {
+      setIsSelectingSkillFiles(false);
+    }
+  };
+
+  const openAddSetDialog = () => {
+    setEditingSetSlug(null);
+    setNewSetTitle("skill set");
+    setNewSetDescription("");
+    setNewSetSkillSlugs(new Set());
+    setIsAddSetOpen(true);
+  };
+
+  const openEditSetDialog = (slug: string) => {
+    const skillSet = skillSetItems.find((item) => item.slug === slug);
+    if (!skillSet) {
+      return;
+    }
+
+    setEditingSetSlug(slug);
+    setNewSetTitle(skillSet.name);
+    setNewSetDescription(skillSet.description);
+    setNewSetSkillSlugs(
+      new Set(
+        skills
+          .filter((skill) => skillSet.skills.includes(skill.name))
+          .map((skill) => skill.slug),
+      ),
+    );
+    setIsAddSetOpen(true);
+  };
+
+  const openSkillView = (slug: string) => {
+    const skill = skills.find((item) => item.slug === slug);
+    if (skill) {
+      setViewingSkill(skill);
+    }
+  };
+
+  const toggleNewSetSkill = (slug: string, checked: boolean) => {
+    setNewSetSkillSlugs((current) => {
+      const next = new Set(current);
+
+      if (checked) {
+        next.add(slug);
+      } else {
+        next.delete(slug);
+      }
+
+      return next;
+    });
+  };
+
+  const handleAddSet = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const title = newSetTitle.trim();
+    if (!title) {
+      toast.error("Enter a title for the skill set.");
+      return;
+    }
+
+    if (newSetSkillSlugs.size === 0) {
+      toast.error("Select at least one skill item.");
+      return;
+    }
+
+    const description = newSetDescription.trim();
+    const selectedSkillNames = skills
+      .filter((skill) => newSetSkillSlugs.has(skill.slug))
+      .map((skill) => skill.name);
+
+    if (editingSetSlug) {
+      setSkillSetItems((current) =>
+        current.map((skillSet) =>
+          skillSet.slug === editingSetSlug
+            ? {
+                ...skillSet,
+                name: title,
+                description,
+                skills: selectedSkillNames,
+                updated: "Updated just now",
+              }
+            : skillSet,
+        ),
+      );
+      setIsAddSetOpen(false);
+      toast.success("Skill set updated.");
+      return;
+    }
+
+    const slugBase =
+      title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "skill-set";
+
+    setSkillSetItems((current) => [
+      ...current,
+      {
+        name: title,
+        slug: `${slugBase}-${Date.now()}`,
+        description,
+        skills: selectedSkillNames,
+        scope: "Local",
+        updated: "Updated just now",
+        icon: RiStackLine,
+      },
+    ]);
+    setIsAddSetOpen(false);
+    toast.success("Skill set added.");
+  };
 
   return (
     <>
       <header className="flex shrink-0 items-center justify-between">
         <h1 className="font-heading text-sm font-medium">Skills</h1>
-        <Button type="button" variant="outline" size="sm">
-          <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
-          Refresh
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-pressed={allVisibleItemsSelected}
+              onClick={toggleSelectAll}
+            >
+              <RiCheckboxMultipleLine aria-hidden="true" data-icon="inline-start" />
+              {allVisibleItemsSelected ? "Deselect all" : "Select all"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={selectedSlugs.size === 0}
+            >
+              <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
+              Update
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={selectedSlugs.size === 0}
+            >
+              <RiDeleteBinLine aria-hidden="true" data-icon="inline-start" />
+              Delete
+            </Button>
+          </>
+          {activeTab === "item" ? (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void handleImportSkills()}
+                disabled={isSelectingSkillFiles}
+              >
+                <RiDownloadLine aria-hidden="true" data-icon="inline-start" />
+                Import
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void handleExportSkills()}
+                disabled={isSelectingSkillFiles}
+              >
+                <RiUploadLine aria-hidden="true" data-icon="inline-start" />
+                Export
+              </Button>
+            </>
+          ) : (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={openAddSetDialog}
+            >
+              <RiAddLine aria-hidden="true" data-icon="inline-start" />
+              Add
+            </Button>
+          )}
+          <Button type="button" variant="outline" size="sm">
+            <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
+            Refresh
+          </Button>
+        </div>
       </header>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border bg-background">
-        <Tabs defaultValue="item" className="min-h-0 min-w-0 flex-1 gap-0">
-          <div className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between lg:px-6">
-            <div className="relative w-full max-w-md">
+        <Tabs
+          value={activeTab}
+          onValueChange={handleTabChange}
+          className="min-h-0 min-w-0 flex-1 gap-0"
+        >
+          <div className="flex w-full min-w-0 items-center gap-2 p-4">
+            <div className="relative min-w-0 flex-1">
               <RiSearchLine
                 aria-hidden="true"
                 className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground"
@@ -508,11 +807,11 @@ export function SkillsPage() {
                 className="pl-8"
               />
             </div>
-            <TabsList className="w-full lg:w-auto">
-              <TabsTrigger value="item" className="flex-1 lg:flex-none">
+            <TabsList className="shrink-0">
+              <TabsTrigger value="item">
                 Item
               </TabsTrigger>
-              <TabsTrigger value="set" className="flex-1 lg:flex-none">
+              <TabsTrigger value="set">
                 Set
               </TabsTrigger>
             </TabsList>
@@ -525,11 +824,12 @@ export function SkillsPage() {
                   items={filteredSkills}
                   selectedSlugs={selectedSlugs}
                   onToggle={toggleSelection}
+                  onView={openSkillView}
                 />
               </ScrollArea>
             ) : (
-              <div className="px-4 py-10 text-center lg:px-6">
-                <p className="font-medium">No matching items</p>
+              <div className="px-4 py-10 text-center" aria-live="polite">
+                <p className="text-sm font-medium">No matching results</p>
                 <p className="mt-1 text-sm text-muted-foreground">Try a different search term.</p>
               </div>
             )}
@@ -542,17 +842,120 @@ export function SkillsPage() {
                   items={filteredSkillSets}
                   selectedSlugs={selectedSlugs}
                   onToggle={toggleSelection}
+                  onEdit={openEditSetDialog}
+                  skillSetItems={skillSetItems}
+                  showSubtitle={false}
                 />
               </ScrollArea>
             ) : (
-              <div className="px-4 py-10 text-center lg:px-6">
-                <p className="font-medium">No matching sets</p>
+              <div className="px-4 py-10 text-center" aria-live="polite">
+                <p className="text-sm font-medium">No matching results</p>
                 <p className="mt-1 text-sm text-muted-foreground">Try a different search term.</p>
               </div>
             )}
           </TabsContent>
         </Tabs>
       </div>
+
+      <Dialog
+        open={viewingSkill !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setViewingSkill(null);
+          }
+        }}
+      >
+        <DialogContent className="flex h-[min(80vh,720px)] max-w-2xl flex-col overflow-hidden">
+          {viewingSkill ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>{viewingSkill.name}</DialogTitle>
+              </DialogHeader>
+              <ScrollArea className="min-h-0 flex-1">
+                <div className="pr-4 text-sm/relaxed [&_h2]:mb-2 [&_h2]:font-heading [&_h2]:text-sm [&_h2]:font-medium [&_li]:text-muted-foreground [&_p]:text-muted-foreground [&_strong]:font-medium [&_ul]:list-disc [&_ul]:space-y-1 [&_ul]:pl-5">
+                  <ReactMarkdown>{getSkillMarkdown(viewingSkill)}</ReactMarkdown>
+                </div>
+              </ScrollArea>
+              <DialogFooter>
+                <DialogClose asChild>
+                  <Button type="button">Close</Button>
+                </DialogClose>
+              </DialogFooter>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isAddSetOpen} onOpenChange={setIsAddSetOpen}>
+        <DialogContent className="flex h-[min(80vh,720px)] max-w-2xl flex-col overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>{editingSetSlug ? "Edit skill set" : "Add skill set"}</DialogTitle>
+          </DialogHeader>
+          <form className="flex min-h-0 flex-1 flex-col gap-4" onSubmit={handleAddSet}>
+            <div className="flex items-start justify-between gap-4">
+              <label className="flex min-w-0 flex-1 flex-col gap-1.5" htmlFor="skill-set-title">
+                <span className="font-medium">Title</span>
+                <Input
+                  id="skill-set-title"
+                  value={newSetTitle}
+                  onChange={(event) => setNewSetTitle(event.currentTarget.value)}
+                  placeholder="Skill set title"
+                  required
+                />
+              </label>
+
+              <label
+                className="flex min-w-0 flex-1 flex-col gap-1.5"
+                htmlFor="skill-set-description"
+              >
+                <span className="font-medium">Description</span>
+                <Input
+                  id="skill-set-description"
+                  value={newSetDescription}
+                  onChange={(event) => setNewSetDescription(event.currentTarget.value)}
+                  placeholder="Describe what this set is for"
+                />
+              </label>
+            </div>
+
+            <fieldset className="flex min-h-0 flex-1 flex-col">
+              <legend className="m-0 mb-1.5 p-0 font-medium">Skill items</legend>
+              <ScrollArea className="min-h-0 flex-1 border border-input">
+                <div className="flex flex-col p-1">
+                  {skills.map((skill) => (
+                    <label
+                      key={skill.slug}
+                      className="flex min-w-0 cursor-pointer items-center gap-2 px-2 py-1.5 hover:bg-muted"
+                    >
+                      <Checkbox
+                        aria-label={`Include ${skill.name}`}
+                        checked={newSetSkillSlugs.has(skill.slug)}
+                        onCheckedChange={(checked) =>
+                          toggleNewSetSkill(skill.slug, checked === true)
+                        }
+                      />
+                      <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                        <span className="min-w-0 flex-1 truncate text-xs font-medium">{skill.name}</span>
+                        <span className="shrink-0 truncate text-[0.65rem] text-muted-foreground">
+                          {getSkillSubtitle(skill.slug)}
+                        </span>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </ScrollArea>
+            </fieldset>
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button type="button" variant="outline">
+                  Cancel
+                </Button>
+              </DialogClose>
+              <Button type="submit">{editingSetSlug ? "Save changes" : "Add set"}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
