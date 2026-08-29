@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.zhouyi31.yssskills",
   "build": {
-    "beforeDevCommand": "pnpm dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
-    "frontendDist": "../dist"
+      "beforeDevCommand": "pnpm exec vite",
+      "devUrl": "http://localhost:1420",
+      "beforeBuildCommand": "pnpm exec vite build",
+      "frontendDist": "../dist"
   },
   "app": {
     "windows": [
