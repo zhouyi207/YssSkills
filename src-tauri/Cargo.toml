@@ -1,3 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+    ".",
+    "crates/skill-core",
+]
+
 [package]
 name = "yssskills"
 version = "0.1.0"
