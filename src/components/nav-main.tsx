@@ -5,7 +5,6 @@ import { normalizeRoutePath } from "@/app/navigation";
 import {
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
@@ -26,7 +25,6 @@ export function NavMain({
 
   return (
     <SidebarGroup>
-      <SidebarGroupLabel></SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
           {items.map((item) => {

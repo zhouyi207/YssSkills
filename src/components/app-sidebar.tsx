@@ -32,22 +32,22 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               <SidebarTrigger
                 aria-label={toggleLabel}
                 title={toggleLabel}
-                className="group/trigger size-8 shrink-0 bg-sidebar-primary text-sidebar-primary-foreground hover:bg-sidebar-primary/90"
+                className="group/trigger size-9 shrink-0 bg-sidebar-primary text-sidebar-primary-foreground hover:bg-sidebar-primary/90"
               >
                 <span className="flex size-full items-center justify-center">
                   <RiCommandLine
                     aria-hidden="true"
-                    className="group-hover/sidebar:hidden group-focus-visible/trigger:hidden"
+                    className="size-4 group-hover/sidebar:hidden group-focus-visible/trigger:hidden"
                   />
                   {isCollapsed ? (
-                    <RiArrowRightDoubleLine
-                      aria-hidden="true"
-                      className="hidden group-hover/sidebar:block group-focus-visible/trigger:block"
-                    />
-                  ) : (
                     <RiArrowLeftDoubleLine
                       aria-hidden="true"
-                      className="hidden group-hover/sidebar:block group-focus-visible/trigger:block"
+                      className="hidden size-4 group-hover/sidebar:block group-focus-visible/trigger:block"
+                    />
+                  ) : (
+                    <RiArrowRightDoubleLine
+                      aria-hidden="true"
+                      className="hidden size-4 group-hover/sidebar:block group-focus-visible/trigger:block"
                     />
                   )}
                 </span>

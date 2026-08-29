@@ -1,16 +1,14 @@
+import { useState } from "react";
 import { Link } from "react-router";
+import { RiFolderOpenLine } from "@remixicon/react";
+import { useTheme } from "next-themes";
+import { toast } from "sonner";
 
-import { PageHeader } from "@/app/pages/page-header";
-import { Badge } from "@/components/ui/badge";
+import { selectDirectory } from "@/app/services/directory-picker";
+
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardFooter } from "@/components/ui/card";
+
 import {
   Select,
   SelectContent,
@@ -22,14 +20,28 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export function SettingsPage() {
+  const { theme, setTheme } = useTheme();
+  const [centralSkillsPath, setCentralSkillsPath] = useState("D:/Projects/shared-skills");
+  const [isSelectingCentralSkillsPath, setIsSelectingCentralSkillsPath] = useState(false);
+
+  const handleSelectCentralSkillsPath = async () => {
+    setIsSelectingCentralSkillsPath(true);
+
+    try {
+      const selectedPath = await selectDirectory("Select central skills repository");
+
+      if (selectedPath) {
+        setCentralSkillsPath(selectedPath);
+      }
+    } catch {
+      toast.error("Unable to open the folder picker.");
+    } finally {
+      setIsSelectingCentralSkillsPath(false);
+    }
+  };
+
   return (
     <div className="flex flex-1 flex-col">
-      <PageHeader
-        eyebrow="Preferences"
-        title="Settings"
-        description="Set the defaults that keep skill discovery and deployment predictable."
-        action={<Badge variant="secondary">Local only</Badge>}
-      />
 
       <div className="p-4 lg:p-6">
         <Tabs defaultValue="general" className="w-full">
@@ -40,93 +52,50 @@ export function SettingsPage() {
 
           <TabsContent value="general" className="mt-4">
             <Card>
-              <CardHeader>
-                <CardTitle>General preferences</CardTitle>
-                <CardDescription>
-                  Defaults used when scanning, importing, and displaying skills.
-                </CardDescription>
-              </CardHeader>
               <CardContent className="flex flex-col gap-5">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex flex-col gap-1">
-                    <span className="font-medium">Default workspace</span>
-                    <span className="text-sm text-muted-foreground">
-                      Where new skills are proposed first.
+                  <div className="flex min-w-0 flex-col gap-1">
+                    <span className="font-medium">Central skills repository</span>
+                    <span
+                      aria-live="polite"
+                      className="truncate text-sm text-muted-foreground"
+                      title={centralSkillsPath}
+                    >
+                      {centralSkillsPath}
                     </span>
                   </div>
-                  <Select defaultValue="global">
-                    <SelectTrigger
-                      className="w-full sm:w-48"
-                      size="sm"
-                      aria-label="Default workspace"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        <SelectItem value="global">Global</SelectItem>
-                        <SelectItem value="project">YssBI project</SelectItem>
-                        <SelectItem value="linked">Linked workspace</SelectItem>
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    aria-label="Choose central skills repository"
+                    onClick={() => void handleSelectCentralSkillsPath()}
+                    disabled={isSelectingCentralSkillsPath}
+                  >
+                    <RiFolderOpenLine aria-hidden="true" data-icon="inline-start" />
+                    Choose
+                  </Button>
                 </div>
 
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex flex-col gap-1">
-                    <span className="font-medium">Install behavior</span>
-                    <span className="text-sm text-muted-foreground">
-                      Keep changes staged until you review the operation.
-                    </span>
-                  </div>
-                  <Select defaultValue="review">
-                    <SelectTrigger
-                      className="w-full sm:w-48"
-                      size="sm"
-                      aria-label="Install behavior"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        <SelectItem value="review">Review first</SelectItem>
-                        <SelectItem value="copy">Copy immediately</SelectItem>
-                        <SelectItem value="link">Link immediately</SelectItem>
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </div>
               </CardContent>
-              <CardFooter className="justify-between">
-                <span className="text-xs text-muted-foreground">
-                  Preview only; persistence is not connected.
-                </span>
-                <Badge variant="outline">Not persisted</Badge>
-              </CardFooter>
             </Card>
           </TabsContent>
 
           <TabsContent value="appearance" className="mt-4">
             <Card>
-              <CardHeader>
-                <CardTitle>Appearance</CardTitle>
-                <CardDescription>
-                  Tune the density and language of the local console.
-                </CardDescription>
-              </CardHeader>
               <CardContent className="flex flex-col gap-5">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex flex-col gap-1">
-                    <span className="font-medium">Language preview</span>
+                    <span className="font-medium">Language</span>
                     <span className="text-sm text-muted-foreground">
-                      Preview only; language switching will be wired to i18n later.
+                      Choose the language for the interface.
                     </span>
                   </div>
                   <Select defaultValue="zh-CN">
                     <SelectTrigger
                       className="w-full sm:w-48"
                       size="sm"
-                      aria-label="Language preview"
+                      aria-label="Language"
                     >
                       <SelectValue />
                     </SelectTrigger>
@@ -141,23 +110,20 @@ export function SettingsPage() {
 
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex flex-col gap-1">
-                    <span className="font-medium">Interface density preview</span>
+                    <span className="font-medium">Theme</span>
                     <span className="text-sm text-muted-foreground">
-                      Preview only; density will be wired to the layout later.
+                      Follow the system theme or choose dark or light.
                     </span>
                   </div>
-                  <Select defaultValue="comfortable">
-                    <SelectTrigger
-                      className="w-full sm:w-48"
-                      size="sm"
-                      aria-label="Interface density preview"
-                    >
+                  <Select value={theme ?? "system"} onValueChange={setTheme}>
+                    <SelectTrigger className="w-full sm:w-48" size="sm" aria-label="Theme">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectGroup>
-                        <SelectItem value="comfortable">Comfortable</SelectItem>
-                        <SelectItem value="compact">Compact</SelectItem>
+                        <SelectItem value="system">System</SelectItem>
+                        <SelectItem value="dark">Dark</SelectItem>
+                        <SelectItem value="light">Light</SelectItem>
                       </SelectGroup>
                     </SelectContent>
                   </Select>

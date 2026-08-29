@@ -17,7 +17,7 @@ import { WorkspacesPage } from "./pages/workspaces-page";
 function AppLayout() {
   return (
     <TooltipProvider>
-      <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
+      <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
         <SidebarProvider className="h-svh max-h-svh overflow-hidden">
           <AppSidebar />
           <SidebarInset className="h-full min-h-0 min-w-0 overflow-x-hidden">
