@@ -14,11 +14,19 @@ documentation should live in maintained project documentation.
 
 ## Sources of truth
 
-* Repository-level agent rules and delivery policy belong in this file.
-* Architecture documentation owns the current implementation map.
-* Development documentation owns toolchain setup, commands, and local workflows.
-* Feature or design documentation owns feature-specific behavior and decisions.
-* Historical documentation must not be treated as current implementation
+* `.rules` owns repository-level agent rules and delivery policy.
+* `docs/architecture/ARCHITECTURE.md` owns the current implementation map.
+* `docs/development/LOCAL_WORKFLOW.md` owns toolchain setup, command details,
+  and the validation matrix.
+* `docs/development/FEATURE_PROCESS.md` owns the feature design and delivery
+  process.
+* `docs/architecture/DIAGNOSTICS_ERRORS_AND_OUTPUT.md` owns the detailed
+  diagnostics, IPC error, result, and program-output contracts.
+* `docs/superpowers/` contains temporary agent-local planning and design output.
+  Do not add or commit its files unless explicitly requested. Long-lived
+  documentation belongs under `docs/architecture/`, `docs/development/`, or
+  `docs/version/`.
+* Treat `docs/version/` as historical documentation, not current implementation
   authority.
 * When maintained documentation and code disagree, verify actual behavior before
   editing and update stale maintained documentation as part of the same change.
