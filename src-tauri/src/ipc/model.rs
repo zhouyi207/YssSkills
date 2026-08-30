@@ -1,0 +1,1005 @@
+use std::{path::Path, time::UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+use skill_core::{InstalledSkill, SkillMarker, SkillSource};
+use skill_harness::{DetectionStatus, HarnessCapabilities, HarnessCategory};
+use skill_local::ScanMode;
+use skill_registry::{Leaderboard, LeaderboardResult, RemoteSkillSummary, SearchResult};
+use skill_workspace::{
+    CentralSkillSnapshot, DeploymentKey, DeploymentMode, DeploymentObservation, DeploymentStatus,
+    DiscoveryRoot, ReconcileReport, TargetRole, UnmatchedLocalSkill, UnsupportedWorkspaceTarget,
+    WorkspaceDiagnostic, WorkspaceKind, WorkspaceReport, WorkspaceResolution, WorkspaceTarget,
+};
+
+use crate::{
+    application::{
+        AppSettings, CatalogSkillDetail, CatalogSkillSummary, CreateWorkspaceInput,
+        CreateWorkspaceKind, DashboardOverview, HarnessOverview, HarnessProbe, PropagationOutcome,
+        WorkspaceObservation, WorkspaceReconcileOutcome, WorkspaceSummary, WorkspacesOverview,
+    },
+    ipc::IpcError,
+    persistence::StoredWorkspace,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathDto {
+    pub value: Option<String>,
+    pub display: String,
+}
+
+impl From<&Path> for PathDto {
+    fn from(path: &Path) -> Self {
+        Self {
+            value: path.to_str().map(ToOwned::to_owned),
+            display: path.to_string_lossy().into_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardOverviewDto {
+    pub counts: DashboardCountsDto,
+    pub activity: Vec<DashboardActivityDto>,
+    pub diagnostics: Vec<SimpleDiagnosticDto>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardCountsDto {
+    pub skills: usize,
+    pub deployments: usize,
+    pub detected_harnesses: usize,
+    pub workspaces: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardActivityDto {
+    pub period_start_epoch_millis: i64,
+    pub imported: usize,
+    pub updated: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimpleDiagnosticDto {
+    pub code: String,
+    pub message: String,
+}
+
+impl From<DashboardOverview> for DashboardOverviewDto {
+    fn from(value: DashboardOverview) -> Self {
+        Self {
+            counts: DashboardCountsDto {
+                skills: value.counts.skills,
+                deployments: value.counts.deployments,
+                detected_harnesses: value.counts.detected_harnesses,
+                workspaces: value.counts.workspaces,
+            },
+            activity: value
+                .activity
+                .into_iter()
+                .map(|period| DashboardActivityDto {
+                    period_start_epoch_millis: period.period_start_epoch_millis,
+                    imported: period.imported,
+                    updated: period.updated,
+                })
+                .collect(),
+            diagnostics: value
+                .diagnostics
+                .into_iter()
+                .map(|diagnostic| SimpleDiagnosticDto {
+                    code: diagnostic.code.to_owned(),
+                    message: diagnostic.message,
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogSkillsResponseDto {
+    pub skills: Vec<CatalogSkillSummaryDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogSkillSummaryDto {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub version: Option<String>,
+    pub source: SkillSourceDto,
+    pub location: PathDto,
+    pub updated_at_epoch_millis: Option<i64>,
+    pub deployment_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogSkillDetailDto {
+    pub skill: CatalogSkillSummaryDto,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SkillSourceDto {
+    Local {
+        path: PathDto,
+    },
+    Registry {
+        registry: String,
+        skill: String,
+        version: Option<String>,
+    },
+    Git {
+        url: String,
+        revision: Option<String>,
+        subdirectory: Option<PathDto>,
+    },
+}
+
+impl From<CatalogSkillSummary> for CatalogSkillSummaryDto {
+    fn from(value: CatalogSkillSummary) -> Self {
+        catalog_skill_summary(value.snapshot, value.deployment_count)
+    }
+}
+
+impl From<CatalogSkillDetail> for CatalogSkillDetailDto {
+    fn from(value: CatalogSkillDetail) -> Self {
+        Self {
+            skill: value.summary.into(),
+            body: value.body,
+        }
+    }
+}
+
+fn catalog_skill_summary(
+    snapshot: CentralSkillSnapshot,
+    deployment_count: usize,
+) -> CatalogSkillSummaryDto {
+    let installed = snapshot.installed;
+    CatalogSkillSummaryDto {
+        id: installed.id.to_string(),
+        name: installed.metadata.name().to_owned(),
+        description: installed.metadata.description().to_owned(),
+        version: installed.metadata.version().map(ToOwned::to_owned),
+        source: installed.source.into(),
+        location: PathDto::from(installed.location.as_path()),
+        updated_at_epoch_millis: snapshot
+            .version
+            .marker_modified_at
+            .and_then(system_time_epoch_millis),
+        deployment_count,
+    }
+}
+
+impl From<SkillSource> for SkillSourceDto {
+    fn from(value: SkillSource) -> Self {
+        match value {
+            SkillSource::Local { path } => Self::Local {
+                path: PathDto::from(path.as_path()),
+            },
+            SkillSource::Registry {
+                registry,
+                skill,
+                version,
+            } => Self::Registry {
+                registry,
+                skill,
+                version,
+            },
+            SkillSource::Git {
+                url,
+                revision,
+                subdirectory,
+            } => Self::Git {
+                url,
+                revision,
+                subdirectory: subdirectory.as_deref().map(PathDto::from),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspacesOverviewDto {
+    pub agents_workspace_id: String,
+    pub harnesses: Vec<HarnessSummaryDto>,
+    pub workspaces: Vec<WorkspaceSummaryDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessSummaryDto {
+    pub id: String,
+    pub display_name: String,
+    pub category: HarnessCategoryDto,
+    pub custom: bool,
+    pub capabilities: HarnessCapabilitiesDto,
+    pub deployment_count: usize,
+    pub probe: Option<HarnessProbeDto>,
+    pub error: Option<IpcError>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HarnessCategoryDto {
+    Coding,
+    Lobster,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessCapabilitiesDto {
+    pub global_scope: bool,
+    pub project_scope: bool,
+    pub recursive_global_discovery: bool,
+    pub configuration_path: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessProbeDto {
+    pub detection_status: DetectionStatusDto,
+    pub checked_paths: Vec<PathDto>,
+    pub global_skills_path: PathDto,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DetectionStatusDto {
+    Installed,
+    NotInstalled,
+    ExplicitlyConfigured,
+}
+
+impl From<WorkspacesOverview> for WorkspacesOverviewDto {
+    fn from(value: WorkspacesOverview) -> Self {
+        Self {
+            agents_workspace_id: value.agents_workspace_id.to_string(),
+            harnesses: value.harnesses.into_iter().map(Into::into).collect(),
+            workspaces: value.workspaces.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<HarnessOverview> for HarnessSummaryDto {
+    fn from(value: HarnessOverview) -> Self {
+        let (probe, error) = match value.probe {
+            Ok(probe) => (Some(probe.into()), None),
+            Err(error) => (None, Some(error.into())),
+        };
+        Self {
+            id: value.id.to_string(),
+            display_name: value.display_name,
+            category: value.category.into(),
+            custom: value.custom,
+            capabilities: value.capabilities.into(),
+            deployment_count: value.deployment_count,
+            probe,
+            error,
+        }
+    }
+}
+
+impl From<HarnessCategory> for HarnessCategoryDto {
+    fn from(value: HarnessCategory) -> Self {
+        match value {
+            HarnessCategory::Coding => Self::Coding,
+            HarnessCategory::Lobster => Self::Lobster,
+        }
+    }
+}
+
+impl From<HarnessCapabilities> for HarnessCapabilitiesDto {
+    fn from(value: HarnessCapabilities) -> Self {
+        Self {
+            global_scope: value.supports_global_scope,
+            project_scope: value.supports_project_scope,
+            recursive_global_discovery: value.recursive_global_discovery,
+            configuration_path: value.supports_configuration_path,
+        }
+    }
+}
+
+impl From<HarnessProbe> for HarnessProbeDto {
+    fn from(value: HarnessProbe) -> Self {
+        Self {
+            detection_status: value.detection_status.into(),
+            checked_paths: value
+                .checked_paths
+                .iter()
+                .map(|path| PathDto::from(path.as_path()))
+                .collect(),
+            global_skills_path: PathDto::from(value.global_skills_path.as_path()),
+        }
+    }
+}
+
+impl From<DetectionStatus> for DetectionStatusDto {
+    fn from(value: DetectionStatus) -> Self {
+        match value {
+            DetectionStatus::Installed => Self::Installed,
+            DetectionStatus::NotInstalled => Self::NotInstalled,
+            DetectionStatus::ExplicitlyConfigured => Self::ExplicitlyConfigured,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSummaryDto {
+    pub id: String,
+    pub name: String,
+    pub kind: WorkspaceKindDto,
+    pub deployment_mode: DeploymentModeDto,
+    pub deployment_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WorkspaceKindDto {
+    Agents,
+    Project {
+        root: PathDto,
+    },
+    Linked {
+        root: PathDto,
+        disabled_root: Option<PathDto>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeploymentModeDto {
+    Copy,
+    SymbolicLink,
+    Junction,
+}
+
+impl From<WorkspaceSummary> for WorkspaceSummaryDto {
+    fn from(value: WorkspaceSummary) -> Self {
+        workspace_summary(value.stored, value.deployment_count)
+    }
+}
+
+fn workspace_summary(stored: StoredWorkspace, deployment_count: usize) -> WorkspaceSummaryDto {
+    WorkspaceSummaryDto {
+        id: stored.workspace.id.to_string(),
+        name: stored.name,
+        kind: stored.workspace.kind.into(),
+        deployment_mode: stored.deployment_mode.into(),
+        deployment_count,
+    }
+}
+
+impl From<WorkspaceKind> for WorkspaceKindDto {
+    fn from(value: WorkspaceKind) -> Self {
+        match value {
+            WorkspaceKind::Agents => Self::Agents,
+            WorkspaceKind::Project { root } => Self::Project {
+                root: PathDto::from(root.as_path()),
+            },
+            WorkspaceKind::Linked {
+                root,
+                disabled_root,
+            } => Self::Linked {
+                root: PathDto::from(root.as_path()),
+                disabled_root: disabled_root.as_deref().map(PathDto::from),
+            },
+        }
+    }
+}
+
+impl From<DeploymentMode> for DeploymentModeDto {
+    fn from(value: DeploymentMode) -> Self {
+        match value {
+            DeploymentMode::Copy => Self::Copy,
+            DeploymentMode::SymbolicLink => Self::SymbolicLink,
+            DeploymentMode::Junction => Self::Junction,
+        }
+    }
+}
+
+impl From<DeploymentModeDto> for DeploymentMode {
+    fn from(value: DeploymentModeDto) -> Self {
+        match value {
+            DeploymentModeDto::Copy => Self::Copy,
+            DeploymentModeDto::SymbolicLink => Self::SymbolicLink,
+            DeploymentModeDto::Junction => Self::Junction,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateWorkspaceRequestDto {
+    pub name: String,
+    pub kind: CreateWorkspaceKindDto,
+    pub deployment_mode: DeploymentModeDto,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum CreateWorkspaceKindDto {
+    Project {
+        root: String,
+    },
+    Linked {
+        root: String,
+        #[serde(default)]
+        disabled_root: Option<String>,
+    },
+}
+
+impl From<CreateWorkspaceRequestDto> for CreateWorkspaceInput {
+    fn from(value: CreateWorkspaceRequestDto) -> Self {
+        let kind = match value.kind {
+            CreateWorkspaceKindDto::Project { root } => {
+                CreateWorkspaceKind::Project { root: root.into() }
+            }
+            CreateWorkspaceKindDto::Linked {
+                root,
+                disabled_root,
+            } => CreateWorkspaceKind::Linked {
+                root: root.into(),
+                disabled_root: disabled_root.map(Into::into),
+            },
+        };
+        Self {
+            name: value.name,
+            kind,
+            deployment_mode: value.deployment_mode.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceIdRequestDto {
+    pub workspace_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillIdRequestDto {
+    pub skill_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceObservationDto {
+    pub workspace: WorkspaceSummaryDto,
+    pub resolution: WorkspaceResolutionDto,
+    pub report: WorkspaceReportDto,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceResolutionDto {
+    pub targets: Vec<WorkspaceTargetDto>,
+    pub discovery_roots: Vec<DiscoveryRootDto>,
+    pub unsupported: Vec<UnsupportedWorkspaceTargetDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceTargetDto {
+    pub harness_id: String,
+    pub path: PathDto,
+    pub role: TargetRoleDto,
+    pub scan_mode: ScanModeDto,
+    pub deployment_mode: DeploymentModeDto,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryRootDto {
+    pub path: PathDto,
+    pub scan_mode: ScanModeDto,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsupportedWorkspaceTargetDto {
+    pub harness_id: String,
+    pub path: PathDto,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TargetRoleDto {
+    Primary,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScanModeDto {
+    Flat,
+    Recursive,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceReportDto {
+    pub workspace_id: String,
+    pub observations: Vec<DeploymentObservationDto>,
+    pub unmatched_local: Vec<UnmatchedLocalSkillDto>,
+    pub diagnostics: Vec<WorkspaceDiagnosticDto>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentObservationDto {
+    pub key: DeploymentKeyDto,
+    pub target_path: PathDto,
+    pub role: TargetRoleDto,
+    pub status: DeploymentStatusDto,
+    pub center: Option<ObservedSkillDto>,
+    pub local_modified_at_epoch_millis: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentKeyDto {
+    pub skill_id: String,
+    pub harness_id: String,
+    pub workspace_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeploymentStatusDto {
+    NotDeployed,
+    InSync,
+    LocalNewer,
+    CenterNewer,
+    Missing,
+    Unsupported,
+    Error,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservedSkillDto {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnmatchedLocalSkillDto {
+    pub name: String,
+    pub description: String,
+    pub path: PathDto,
+    pub marker: SkillMarkerDto,
+    pub target: Option<WorkspaceTargetDto>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SkillMarkerDto {
+    Canonical,
+    Legacy,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceDiagnosticDto {
+    pub path: PathDto,
+    pub status: DeploymentStatusDto,
+    pub error: IpcError,
+}
+
+impl From<WorkspaceObservation> for WorkspaceObservationDto {
+    fn from(value: WorkspaceObservation) -> Self {
+        Self {
+            workspace: value.workspace.into(),
+            resolution: value.resolution.into(),
+            report: value.report.into(),
+        }
+    }
+}
+
+impl From<WorkspaceResolution> for WorkspaceResolutionDto {
+    fn from(value: WorkspaceResolution) -> Self {
+        Self {
+            targets: value.targets.into_iter().map(Into::into).collect(),
+            discovery_roots: value.discovery_roots.into_iter().map(Into::into).collect(),
+            unsupported: value.unsupported.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<WorkspaceTarget> for WorkspaceTargetDto {
+    fn from(value: WorkspaceTarget) -> Self {
+        Self {
+            harness_id: value.harness_id.to_string(),
+            path: PathDto::from(value.path.as_path()),
+            role: value.role.into(),
+            scan_mode: value.scan_mode.into(),
+            deployment_mode: value.deployment_mode.into(),
+        }
+    }
+}
+
+impl From<DiscoveryRoot> for DiscoveryRootDto {
+    fn from(value: DiscoveryRoot) -> Self {
+        Self {
+            path: PathDto::from(value.path.as_path()),
+            scan_mode: value.scan_mode.into(),
+        }
+    }
+}
+
+impl From<UnsupportedWorkspaceTarget> for UnsupportedWorkspaceTargetDto {
+    fn from(value: UnsupportedWorkspaceTarget) -> Self {
+        Self {
+            harness_id: value.harness_id.to_string(),
+            path: PathDto::from(value.path.as_path()),
+            reason: value.reason.to_owned(),
+        }
+    }
+}
+
+impl From<TargetRole> for TargetRoleDto {
+    fn from(value: TargetRole) -> Self {
+        match value {
+            TargetRole::Primary => Self::Primary,
+            TargetRole::Disabled => Self::Disabled,
+        }
+    }
+}
+
+impl From<ScanMode> for ScanModeDto {
+    fn from(value: ScanMode) -> Self {
+        match value {
+            ScanMode::Flat => Self::Flat,
+            ScanMode::Recursive => Self::Recursive,
+        }
+    }
+}
+
+impl From<WorkspaceReport> for WorkspaceReportDto {
+    fn from(value: WorkspaceReport) -> Self {
+        Self {
+            workspace_id: value.workspace_id.to_string(),
+            observations: value.observations.into_iter().map(Into::into).collect(),
+            unmatched_local: value.unmatched_local.into_iter().map(Into::into).collect(),
+            diagnostics: value.diagnostics.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<DeploymentObservation> for DeploymentObservationDto {
+    fn from(value: DeploymentObservation) -> Self {
+        Self {
+            key: value.key.into(),
+            target_path: PathDto::from(value.target_path.as_path()),
+            role: value.role.into(),
+            status: value.status.into(),
+            center: value.center.map(|snapshot| snapshot.installed.into()),
+            local_modified_at_epoch_millis: value
+                .local
+                .and_then(|version| version.marker_modified_at)
+                .and_then(system_time_epoch_millis),
+        }
+    }
+}
+
+impl From<DeploymentKey> for DeploymentKeyDto {
+    fn from(value: DeploymentKey) -> Self {
+        Self {
+            skill_id: value.skill_id.to_string(),
+            harness_id: value.harness_id.to_string(),
+            workspace_id: value.workspace_id.to_string(),
+        }
+    }
+}
+
+impl From<DeploymentStatus> for DeploymentStatusDto {
+    fn from(value: DeploymentStatus) -> Self {
+        match value {
+            DeploymentStatus::NotDeployed => Self::NotDeployed,
+            DeploymentStatus::InSync => Self::InSync,
+            DeploymentStatus::LocalNewer => Self::LocalNewer,
+            DeploymentStatus::CenterNewer => Self::CenterNewer,
+            DeploymentStatus::Missing => Self::Missing,
+            DeploymentStatus::Unsupported => Self::Unsupported,
+            DeploymentStatus::Error => Self::Error,
+        }
+    }
+}
+
+impl From<InstalledSkill> for ObservedSkillDto {
+    fn from(value: InstalledSkill) -> Self {
+        Self {
+            id: value.id.to_string(),
+            name: value.metadata.name().to_owned(),
+            description: value.metadata.description().to_owned(),
+        }
+    }
+}
+
+impl From<UnmatchedLocalSkill> for UnmatchedLocalSkillDto {
+    fn from(value: UnmatchedLocalSkill) -> Self {
+        Self {
+            name: value.scanned.document.metadata().name().to_owned(),
+            description: value.scanned.document.metadata().description().to_owned(),
+            path: PathDto::from(value.scanned.path.as_path()),
+            marker: value.scanned.marker.into(),
+            target: value.target.map(Into::into),
+        }
+    }
+}
+
+impl From<SkillMarker> for SkillMarkerDto {
+    fn from(value: SkillMarker) -> Self {
+        match value {
+            SkillMarker::Canonical => Self::Canonical,
+            SkillMarker::Legacy => Self::Legacy,
+        }
+    }
+}
+
+impl From<WorkspaceDiagnostic> for WorkspaceDiagnosticDto {
+    fn from(value: WorkspaceDiagnostic) -> Self {
+        Self {
+            path: PathDto::from(value.path.as_path()),
+            status: value.status.into(),
+            error: value.error.into(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceReconcileOutcomeDto {
+    pub requested_workspace: WorkspaceSummaryDto,
+    pub requested: ReconcileReportDto,
+    pub propagated: Vec<PropagationOutcomeDto>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconcileReportDto {
+    pub workspace_id: String,
+    pub imported: Vec<String>,
+    pub center_updated: Vec<String>,
+    pub propagated: Vec<DeploymentKeyDto>,
+    pub final_report: WorkspaceReportDto,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PropagationOutcomeDto {
+    pub workspace: WorkspaceSummaryDto,
+    pub report: Option<ReconcileReportDto>,
+    pub error: Option<IpcError>,
+}
+
+impl From<WorkspaceReconcileOutcome> for WorkspaceReconcileOutcomeDto {
+    fn from(value: WorkspaceReconcileOutcome) -> Self {
+        Self {
+            requested_workspace: workspace_summary(value.requested_workspace, 0),
+            requested: value.requested.into(),
+            propagated: value.propagated.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<ReconcileReport> for ReconcileReportDto {
+    fn from(value: ReconcileReport) -> Self {
+        Self {
+            workspace_id: value.workspace_id.to_string(),
+            imported: value
+                .imported
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
+            center_updated: value
+                .center_updated
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
+            propagated: value.propagated.into_iter().map(Into::into).collect(),
+            final_report: value.final_report.into(),
+        }
+    }
+}
+
+impl From<PropagationOutcome> for PropagationOutcomeDto {
+    fn from(value: PropagationOutcome) -> Self {
+        match value.result {
+            Ok(report) => Self {
+                workspace: workspace_summary(value.workspace, 0),
+                report: Some(report.into()),
+                error: None,
+            },
+            Err(error) => Self {
+                workspace: workspace_summary(value.workspace, 0),
+                report: None,
+                error: Some(error.into()),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettingsDto {
+    pub catalog_root: PathDto,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateCatalogRootRequestDto {
+    pub catalog_root: String,
+}
+
+impl From<AppSettings> for AppSettingsDto {
+    fn from(value: AppSettings) -> Self {
+        Self {
+            catalog_root: PathDto::from(value.catalog_root.as_path()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegistrySearchRequestDto {
+    pub query: String,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegistryLeaderboardRequestDto {
+    pub leaderboard: LeaderboardDto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LeaderboardDto {
+    AllTime,
+    Trending,
+    Hot,
+}
+
+impl From<LeaderboardDto> for Leaderboard {
+    fn from(value: LeaderboardDto) -> Self {
+        match value {
+            LeaderboardDto::AllTime => Self::AllTime,
+            LeaderboardDto::Trending => Self::Trending,
+            LeaderboardDto::Hot => Self::Hot,
+        }
+    }
+}
+
+impl From<Leaderboard> for LeaderboardDto {
+    fn from(value: Leaderboard) -> Self {
+        match value {
+            Leaderboard::AllTime => Self::AllTime,
+            Leaderboard::Trending => Self::Trending,
+            Leaderboard::Hot => Self::Hot,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryResultDto {
+    pub mode: RegistryResultModeDto,
+    pub leaderboard: Option<LeaderboardDto>,
+    pub query: Option<String>,
+    pub skills: Vec<RegistrySkillSummaryDto>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RegistryResultModeDto {
+    Leaderboard,
+    Search,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistrySkillSummaryDto {
+    pub id: RegistrySkillIdDto,
+    pub name: String,
+    pub installs: u64,
+    pub source_kind: Option<String>,
+    pub official: Option<bool>,
+    pub details_url: Option<String>,
+    pub rank: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistrySkillIdDto {
+    pub source: String,
+    pub skill_id: String,
+}
+
+impl RegistryResultDto {
+    pub fn from_search(query: String, value: SearchResult) -> Self {
+        Self {
+            mode: RegistryResultModeDto::Search,
+            leaderboard: None,
+            query: Some(query),
+            skills: value.skills.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    pub fn from_leaderboard(value: LeaderboardResult) -> Self {
+        Self {
+            mode: RegistryResultModeDto::Leaderboard,
+            leaderboard: Some(value.leaderboard.into()),
+            query: None,
+            skills: value.skills.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<RemoteSkillSummary> for RegistrySkillSummaryDto {
+    fn from(value: RemoteSkillSummary) -> Self {
+        Self {
+            id: RegistrySkillIdDto {
+                source: value.id.source,
+                skill_id: value.id.skill_id,
+            },
+            name: value.name,
+            installs: value.installs,
+            source_kind: value.source_kind.map(|kind| kind.label().to_owned()),
+            official: value.is_official,
+            details_url: value.skills_sh_url,
+            rank: value.rank,
+        }
+    }
+}
+
+fn system_time_epoch_millis(value: std::time::SystemTime) -> Option<i64> {
+    let millis = value.duration_since(UNIX_EPOCH).ok()?.as_millis();
+    i64::try_from(millis).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_workspace_request_uses_explicit_camel_case_contract() {
+        let request: CreateWorkspaceRequestDto = serde_json::from_value(serde_json::json!({
+            "name": "Project",
+            "kind": { "kind": "project", "root": "C:/project" },
+            "deploymentMode": "copy"
+        }))
+        .unwrap();
+
+        assert_eq!(request.name, "Project");
+        assert_eq!(request.deployment_mode, DeploymentModeDto::Copy);
+        assert!(matches!(
+            request.kind,
+            CreateWorkspaceKindDto::Project { .. }
+        ));
+    }
+
+    #[test]
+    fn request_rejects_unknown_fields() {
+        let result = serde_json::from_value::<UpdateCatalogRootRequestDto>(serde_json::json!({
+            "catalogRoot": "C:/catalog",
+            "unexpected": true
+        }));
+
+        assert!(result.is_err());
+    }
+}
