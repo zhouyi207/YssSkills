@@ -113,6 +113,26 @@ fn fixture_with_unmatched_local_skill() -> TestFixture {
     fixture
 }
 
+fn fixture_with_duplicate_unmatched_local_skills() -> TestFixture {
+    let temp = tempdir().unwrap();
+    let center_root = temp.path().join("center");
+    let target_root = temp.path().join("target");
+    let disabled_root = temp.path().join("disabled");
+    fs::create_dir_all(&center_root).unwrap();
+    let enabled_skill = write_skill(&target_root.join("shared"), "shared");
+    let disabled_skill = write_skill(&disabled_root.join("shared"), "shared");
+
+    let mut fixture = new_fixture(
+        temp,
+        target_root,
+        Some(disabled_root),
+        None,
+        vec![enabled_skill, disabled_skill],
+    );
+    fixture.center_root = center_root;
+    fixture
+}
+
 fn fixture_with_center_newer_skill_and_two_targets() -> TestFixture {
     let temp = tempdir().unwrap();
     let center_root = temp.path().join("center");
@@ -472,10 +492,10 @@ impl CentralCatalogPort for FakeCatalog {
             &destination,
             skill_local::ExistingDestination::Replace,
         )
-        .map_err(|error| Box::new(error) as CatalogFailure)?;
+        .map_err(CatalogFailure::local_operation)?;
         let imported = SystemLocalSkillPort
             .read(&destination)
-            .map_err(|error| Box::new(error) as CatalogFailure)?;
+            .map_err(CatalogFailure::local_operation)?;
         let snapshot = CentralSkillSnapshot {
             installed: InstalledSkill {
                 id: SkillId::new(),
@@ -513,10 +533,10 @@ impl CentralCatalogPort for FakeCatalog {
             &existing.installed.location,
             skill_local::ExistingDestination::Replace,
         )
-        .map_err(|error| Box::new(error) as CatalogFailure)?;
+        .map_err(CatalogFailure::local_operation)?;
         let updated = SystemLocalSkillPort
             .read(&existing.installed.location)
-            .map_err(|error| Box::new(error) as CatalogFailure)?;
+            .map_err(CatalogFailure::local_operation)?;
         let snapshot = CentralSkillSnapshot {
             installed: InstalledSkill {
                 id: *skill_id,
@@ -561,6 +581,7 @@ struct FailingCatalog {
     fail_bindings_after_import: bool,
     imported: bool,
     fail_match: Option<PathBuf>,
+    fail_associate_once: bool,
 }
 
 impl FailingCatalog {
@@ -573,6 +594,7 @@ impl FailingCatalog {
             fail_bindings_after_import: false,
             imported: false,
             fail_match: None,
+            fail_associate_once: false,
         }
     }
 
@@ -585,6 +607,7 @@ impl FailingCatalog {
             fail_bindings_after_import: false,
             imported: false,
             fail_match: None,
+            fail_associate_once: false,
         }
     }
 
@@ -597,6 +620,7 @@ impl FailingCatalog {
             fail_bindings_after_import: false,
             imported: false,
             fail_match: None,
+            fail_associate_once: false,
         }
     }
 
@@ -609,6 +633,7 @@ impl FailingCatalog {
             fail_bindings_after_import: true,
             imported: false,
             fail_match: None,
+            fail_associate_once: false,
         }
     }
 
@@ -621,6 +646,20 @@ impl FailingCatalog {
             fail_bindings_after_import: false,
             imported: false,
             fail_match: Some(path),
+            fail_associate_once: false,
+        }
+    }
+
+    fn associate_once(inner: FakeCatalog) -> Self {
+        Self {
+            inner,
+            fail_list: false,
+            fail_bindings: false,
+            fail_list_after_import: false,
+            fail_bindings_after_import: false,
+            imported: false,
+            fail_match: None,
+            fail_associate_once: true,
         }
     }
 }
@@ -628,7 +667,9 @@ impl FailingCatalog {
 impl CentralCatalogPort for FailingCatalog {
     fn list(&self) -> Result<Vec<CentralSkillSnapshot>, CatalogFailure> {
         if self.fail_list || (self.fail_list_after_import && self.imported) {
-            return Err(Box::new(std::io::Error::other("recorded list failure")));
+            return Err(CatalogFailure::storage(std::io::Error::other(
+                "recorded list failure",
+            )));
         }
         self.inner.list()
     }
@@ -638,7 +679,9 @@ impl CentralCatalogPort for FailingCatalog {
         workspace_id: WorkspaceId,
     ) -> Result<Vec<DeploymentBinding>, CatalogFailure> {
         if self.fail_bindings || (self.fail_bindings_after_import && self.imported) {
-            return Err(Box::new(std::io::Error::other("recorded bindings failure")));
+            return Err(CatalogFailure::storage(std::io::Error::other(
+                "recorded bindings failure",
+            )));
         }
         self.inner.bindings(workspace_id)
     }
@@ -649,7 +692,9 @@ impl CentralCatalogPort for FailingCatalog {
         target_path: &Path,
     ) -> Result<CentralMatch, CatalogFailure> {
         if self.fail_match.as_deref() == Some(target_path) {
-            return Err(Box::new(std::io::Error::other("recorded match failure")));
+            return Err(CatalogFailure::storage(std::io::Error::other(
+                "recorded match failure",
+            )));
         }
         self.inner.resolve_match(scanned, target_path)
     }
@@ -674,6 +719,11 @@ impl CentralCatalogPort for FailingCatalog {
     }
 
     fn associate(&mut self, binding: DeploymentBinding) -> Result<(), CatalogFailure> {
+        if self.fail_associate_once {
+            self.fail_associate_once = false;
+            return Err(CatalogFailure::conflict("recorded associate failure"));
+        }
+
         self.inner.associate(binding)
     }
 }
@@ -1301,6 +1351,75 @@ fn observe_marks_match_failure_as_error_not_missing() {
 }
 
 #[test]
+fn reconcile_recovers_an_imported_skill_missing_its_binding() {
+    let fixture = fixture_with_unmatched_local_skill();
+    let catalog_state = FakeCatalog::empty(fixture.center_root.clone());
+    let mut catalog = FailingCatalog::associate_once(catalog_state.clone());
+    let local = RecordingLocal::default();
+    let mut engine = WorkspaceEngine::new(&local, &mut catalog);
+
+    let first = engine
+        .reconcile(
+            &fixture.workspace,
+            &fixture.harnesses,
+            &fixture.environment,
+            DeploymentMode::Copy,
+        )
+        .unwrap();
+
+    assert_eq!(first.imported.len(), 1);
+    assert!(catalog_state.associate_calls().is_empty());
+    assert!(first.final_report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.path == fixture.first_target()
+            && matches!(
+                &diagnostic.error,
+                WorkspaceError::Catalog {
+                    operation: "associate",
+                    source: CatalogFailure::Conflict { .. },
+                }
+            )
+    }));
+
+    engine
+        .observe(
+            &fixture.workspace,
+            &fixture.harnesses,
+            &fixture.environment,
+            DeploymentMode::Copy,
+        )
+        .unwrap();
+    assert!(catalog_state.associate_calls().is_empty());
+
+    let recovered = engine
+        .reconcile(
+            &fixture.workspace,
+            &fixture.harnesses,
+            &fixture.environment,
+            DeploymentMode::Copy,
+        )
+        .unwrap();
+
+    assert!(recovered.imported.is_empty());
+    assert_eq!(catalog_state.import_calls().len(), 1);
+    assert_eq!(catalog_state.associate_calls().len(), 1);
+    assert_eq!(recovered.final_report.observations.len(), 1);
+    assert_eq!(
+        recovered.final_report.observations[0].status,
+        DeploymentStatus::InSync
+    );
+
+    engine
+        .reconcile(
+            &fixture.workspace,
+            &fixture.harnesses,
+            &fixture.environment,
+            DeploymentMode::Copy,
+        )
+        .unwrap();
+    assert_eq!(catalog_state.associate_calls().len(), 1);
+}
+
+#[test]
 fn reconcile_imports_unmatched_local_skill_without_replacing_original() {
     let fixture = fixture_with_unmatched_local_skill();
     let local = RecordingLocal::default();
@@ -1319,6 +1438,34 @@ fn reconcile_imports_unmatched_local_skill_without_replacing_original() {
     assert_eq!(report.imported.len(), 1);
     assert_eq!(report.final_report.diagnostics.len(), 0);
     assert!(fixture.original_skill_path.join("SKILL.md").is_file());
+}
+
+#[test]
+fn reconcile_imports_identical_local_skills_once_and_associates_all_targets() {
+    let fixture = fixture_with_duplicate_unmatched_local_skills();
+    let local = RecordingLocal::default();
+    let catalog = FakeCatalog::empty(fixture.center_root.clone());
+    let catalog_state = catalog.clone();
+    let mut engine = WorkspaceEngine::new(local, catalog);
+
+    let report = engine
+        .reconcile(
+            &fixture.workspace,
+            &fixture.harnesses,
+            &fixture.environment,
+            DeploymentMode::Copy,
+        )
+        .unwrap();
+
+    assert_eq!(report.imported.len(), 1);
+    assert_eq!(catalog_state.import_calls().len(), 1);
+    assert_eq!(catalog_state.associate_calls().len(), 2);
+    assert_eq!(report.final_report.observations.len(), 2);
+    assert!(report
+        .final_report
+        .observations
+        .iter()
+        .all(|observation| observation.key.skill_id == report.imported[0]));
 }
 
 #[test]

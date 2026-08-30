@@ -1,6 +1,7 @@
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
+    fs, io,
     path::{Component, Path, PathBuf},
 };
 
@@ -57,6 +58,8 @@ const BINDING_PARENT_DIR_REASON: &str =
 const BINDING_WORKSPACE_REASON: &str = "deployment binding belongs to another workspace";
 const BINDING_OUTSIDE_TARGET_REASON: &str =
     "deployment binding target is outside the workspace target root";
+const BINDING_LINKED_PARENT_REASON: &str =
+    "deployment binding parent path must not contain symbolic links or junctions";
 
 pub struct WorkspaceEngine<L, C> {
     local: L,
@@ -119,6 +122,17 @@ where
         if center_snapshots.is_some() && bindings.is_some() {
             for item in inventory.skills {
                 let target_path = item.scanned.path.clone();
+                if let Some(target) = item.target.as_ref() {
+                    if let Err(error) = validate_target_path(workspace, target, &target_path) {
+                        match_failures.insert(normalized_path_key(&target_path));
+                        diagnostics.push(WorkspaceDiagnostic {
+                            path: target_path,
+                            status: DeploymentStatus::Error,
+                            error,
+                        });
+                        continue;
+                    }
+                }
                 match self.catalog.resolve_match(&item.scanned, &target_path) {
                     Ok(CentralMatch::Unique(skill_id)) => {
                         matched_local.push(MatchedLocalSkill {
@@ -278,11 +292,65 @@ where
         let mut matched_local = Vec::new();
         let mut unmatched_local = Vec::new();
         let mut match_failures = HashSet::new();
+        let mut known_binding_keys: HashSet<DeploymentKey> = initial_bindings
+            .iter()
+            .flatten()
+            .map(|binding| binding.key.clone())
+            .collect();
+        let mut bindings_changed = false;
 
         for item in inventory.skills {
             let target_path = item.scanned.path.clone();
+            if let Some(target) = item.target.as_ref() {
+                if let Err(error) = validate_target_path(workspace, target, &target_path) {
+                    match_failures.insert(normalized_path_key(&target_path));
+                    operation_diagnostics.push(WorkspaceDiagnostic {
+                        path: target_path,
+                        status: DeploymentStatus::Error,
+                        error,
+                    });
+                    continue;
+                }
+            }
             match self.catalog.resolve_match(&item.scanned, &target_path) {
                 Ok(CentralMatch::Unique(skill_id)) => {
+                    if let Some(target) = item.target.as_ref() {
+                        let key = DeploymentKey {
+                            skill_id,
+                            harness_id: target.harness_id.clone(),
+                            workspace_id: target.workspace_id,
+                        };
+                        if !known_binding_keys.contains(&key) {
+                            let binding = DeploymentBinding {
+                                key: key.clone(),
+                                target_path: item.scanned.path.clone(),
+                                deployment_mode: target.deployment_mode,
+                            };
+                            match target_for_binding(workspace, &resolution, &binding) {
+                                Ok(_) => match self.catalog.associate(binding) {
+                                    Ok(()) => {
+                                        known_binding_keys.insert(key);
+                                        bindings_changed = true;
+                                    }
+                                    Err(source) => {
+                                        operation_diagnostics.push(catalog_path_diagnostic(
+                                            target_path.clone(),
+                                            "associate",
+                                            source,
+                                        ));
+                                    }
+                                },
+                                Err(error) => {
+                                    operation_diagnostics.push(WorkspaceDiagnostic {
+                                        path: target_path.clone(),
+                                        status: DeploymentStatus::Error,
+                                        error,
+                                    });
+                                }
+                            }
+                        }
+                    }
+
                     matched_local.push(MatchedLocalSkill {
                         skill_id,
                         scanned: item.scanned,
@@ -324,21 +392,66 @@ where
         for unmatched in unmatched_local {
             let scanned = unmatched.scanned;
             let target = unmatched.target;
-            let imported_snapshot = match self.catalog.import_local(&scanned) {
-                Ok(snapshot) => snapshot,
-                Err(source) => {
-                    operation_diagnostics.push(catalog_path_diagnostic(
-                        scanned.path.clone(),
-                        "import_local",
-                        source,
-                    ));
-                    continue;
+            let target_path = scanned.path.clone();
+            let matched_after_import = if imported.is_empty() {
+                None
+            } else {
+                match self.catalog.resolve_match(&scanned, &target_path) {
+                    Ok(CentralMatch::Unique(skill_id)) => Some(skill_id),
+                    Ok(CentralMatch::None) => None,
+                    Ok(CentralMatch::Ambiguous(mut candidates)) => {
+                        candidates.sort_by_key(|candidate| candidate.to_string());
+                        match_failures.insert(normalized_path_key(&target_path));
+                        operation_diagnostics.push(WorkspaceDiagnostic {
+                            path: target_path.clone(),
+                            status: DeploymentStatus::Error,
+                            error: WorkspaceError::AmbiguousMatch {
+                                path: target_path,
+                                candidates,
+                            },
+                        });
+                        continue;
+                    }
+                    Err(source) => {
+                        match_failures.insert(normalized_path_key(&target_path));
+                        operation_diagnostics.push(catalog_path_diagnostic(
+                            target_path,
+                            "resolve_match",
+                            source,
+                        ));
+                        continue;
+                    }
                 }
             };
-            let skill_id = imported_snapshot.installed.id;
-            imported.push(skill_id);
+
+            let skill_id = match matched_after_import {
+                Some(skill_id) => skill_id,
+                None => {
+                    let imported_snapshot = match self.catalog.import_local(&scanned) {
+                        Ok(snapshot) => snapshot,
+                        Err(source) => {
+                            operation_diagnostics.push(catalog_path_diagnostic(
+                                scanned.path.clone(),
+                                "import_local",
+                                source,
+                            ));
+                            continue;
+                        }
+                    };
+                    let skill_id = imported_snapshot.installed.id;
+                    imported.push(skill_id);
+                    skill_id
+                }
+            };
 
             let Some(target) = target else {
+                if matched_after_import.is_some() {
+                    matched_local.push(MatchedLocalSkill {
+                        skill_id,
+                        scanned,
+                        target: None,
+                    });
+                }
                 continue;
             };
             let binding = DeploymentBinding {
@@ -364,7 +477,6 @@ where
 
         let mut center_snapshots = initial_center_snapshots;
         let mut current_bindings = initial_bindings;
-        let mut bindings_changed = false;
         if !imported.is_empty() {
             center_snapshots = match self.catalog.list() {
                 Ok(snapshots) => Some(snapshots),
@@ -783,10 +895,95 @@ fn target_for_binding<'a>(
             .find(|target| path_is_strict_descendant(&target.path, &normalized_target_path)),
     };
 
-    target.ok_or_else(|| WorkspaceError::InvalidTarget {
+    let target = target.ok_or_else(|| WorkspaceError::InvalidTarget {
         path: binding.target_path.clone(),
         reason: BINDING_OUTSIDE_TARGET_REASON,
-    })
+    })?;
+    validate_target_path(workspace, target, &normalized_target_path)?;
+    Ok(target)
+}
+
+fn validate_target_path(
+    workspace: &Workspace,
+    target: &WorkspaceTarget,
+    path: &Path,
+) -> Result<(), WorkspaceError> {
+    let normalized_path = normalize_binding_target(path)?;
+    if !path_is_strict_descendant(&target.path, &normalized_path) {
+        return Err(WorkspaceError::InvalidTarget {
+            path: path.to_path_buf(),
+            reason: BINDING_OUTSIDE_TARGET_REASON,
+        });
+    }
+    let safety_root = match &workspace.kind {
+        WorkspaceKind::Project { root } => root.as_path(),
+        WorkspaceKind::Agents | WorkspaceKind::Linked { .. } => target.path.as_path(),
+    };
+    validate_existing_parent_chain(safety_root, &normalized_path)
+}
+
+fn validate_existing_parent_chain(root: &Path, target: &Path) -> Result<(), WorkspaceError> {
+    let Some(parent) = target.parent() else {
+        return Err(WorkspaceError::InvalidTarget {
+            path: target.to_path_buf(),
+            reason: BINDING_OUTSIDE_TARGET_REASON,
+        });
+    };
+    let relative = parent
+        .strip_prefix(root)
+        .map_err(|_| WorkspaceError::InvalidTarget {
+            path: target.to_path_buf(),
+            reason: BINDING_OUTSIDE_TARGET_REASON,
+        })?;
+    let mut current = root.to_path_buf();
+    inspect_parent_component(&current, target)?;
+    for component in relative.components() {
+        if let Component::Normal(component) = component {
+            current.push(component);
+            inspect_parent_component(&current, target)?;
+        }
+    }
+    Ok(())
+}
+
+fn inspect_parent_component(path: &Path, target: &Path) -> Result<(), WorkspaceError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(WorkspaceError::Local(LocalError::Io {
+                path: path.to_path_buf(),
+                source,
+            }))
+        }
+    };
+    if metadata_is_link(&metadata) {
+        return Err(WorkspaceError::InvalidTarget {
+            path: target.to_path_buf(),
+            reason: BINDING_LINKED_PARENT_REASON,
+        });
+    }
+    if !metadata.is_dir() {
+        return Err(WorkspaceError::InvalidTarget {
+            path: target.to_path_buf(),
+            reason: BINDING_OUTSIDE_TARGET_REASON,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn metadata_is_link(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_type().is_symlink()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn metadata_is_link(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
 }
 
 fn local_candidate_for_binding<'a>(
@@ -1099,5 +1296,42 @@ fn empty_resolution() -> WorkspaceResolution {
         targets: Vec::new(),
         discovery_roots: Vec::new(),
         unsupported: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn physical_target_boundary_accepts_regular_parent_chain() {
+        let root = tempdir().unwrap();
+        let target_root = root.path().join("workspace");
+        let nested = target_root.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+
+        validate_existing_parent_chain(&target_root, &nested.join("skill")).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn physical_target_boundary_rejects_linked_parent() {
+        let root = tempdir().unwrap();
+        let external = root.path().join("external");
+        let linked = root.path().join("linked");
+        fs::create_dir_all(&external).unwrap();
+        std::os::unix::fs::symlink(&external, &linked).unwrap();
+
+        let error = validate_existing_parent_chain(&linked, &linked.join("skill")).unwrap_err();
+
+        assert!(matches!(
+            error,
+            WorkspaceError::InvalidTarget {
+                reason: BINDING_LINKED_PARENT_REASON,
+                ..
+            }
+        ));
     }
 }

@@ -2,6 +2,7 @@ use std::{
     cmp::Ordering,
     fmt,
     path::{Component, Path, PathBuf},
+    str::FromStr,
     time::SystemTime,
 };
 
@@ -13,6 +14,7 @@ use std::os::windows::ffi::OsStrExt;
 use skill_core::{ContentHash, InstalledSkill, SkillId};
 use skill_harness::HarnessId;
 use skill_local::{ScanMode, ScannedSkill};
+use thiserror::Error;
 use uuid::Uuid;
 
 use crate::error::WorkspaceError;
@@ -23,6 +25,16 @@ pub struct WorkspaceId(Uuid);
 impl WorkspaceId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
+    }
+
+    pub fn parse(value: &str) -> Result<Self, WorkspaceIdError> {
+        if value.trim().is_empty() {
+            return Err(WorkspaceIdError::Empty);
+        }
+
+        Uuid::parse_str(value.trim())
+            .map(Self)
+            .map_err(|_| WorkspaceIdError::InvalidFormat)
     }
 
     pub const fn from_uuid(value: Uuid) -> Self {
@@ -44,6 +56,22 @@ impl fmt::Display for WorkspaceId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)
     }
+}
+
+impl FromStr for WorkspaceId {
+    type Err = WorkspaceIdError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum WorkspaceIdError {
+    #[error("workspace id must not be empty")]
+    Empty,
+    #[error("workspace id must be a valid UUID")]
+    InvalidFormat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -527,6 +555,22 @@ mod tests {
     use skill_core::ContentHash;
 
     use super::*;
+
+    #[test]
+    fn workspace_id_parsing_matches_skill_id_contract() {
+        let expected = WorkspaceId::from_uuid(Uuid::from_u128(1));
+
+        assert_eq!(
+            WorkspaceId::parse(" 00000000-0000-0000-0000-000000000001 "),
+            Ok(expected)
+        );
+        assert_eq!("00000000-0000-0000-0000-000000000001".parse(), Ok(expected));
+        assert_eq!(WorkspaceId::parse("  "), Err(WorkspaceIdError::Empty));
+        assert_eq!(
+            WorkspaceId::parse("not-a-uuid"),
+            Err(WorkspaceIdError::InvalidFormat)
+        );
+    }
 
     #[test]
     fn equal_hash_is_in_sync_even_when_times_differ() {
