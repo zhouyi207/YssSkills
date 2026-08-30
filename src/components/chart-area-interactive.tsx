@@ -25,21 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-
-const activityData = [
-  { week: "May 06", installed: 8, updated: 4 },
-  { week: "May 13", installed: 11, updated: 7 },
-  { week: "May 20", installed: 9, updated: 5 },
-  { week: "May 27", installed: 15, updated: 10 },
-  { week: "Jun 03", installed: 13, updated: 8 },
-  { week: "Jun 10", installed: 18, updated: 12 },
-  { week: "Jun 17", installed: 16, updated: 14 },
-  { week: "Jun 24", installed: 22, updated: 15 },
-  { week: "Jul 01", installed: 19, updated: 13 },
-  { week: "Jul 08", installed: 24, updated: 18 },
-  { week: "Jul 15", installed: 21, updated: 16 },
-  { week: "Jul 22", installed: 27, updated: 20 },
-];
+import type { DashboardActivityDto } from "@/shared/types/dashboard";
 
 const chartConfig = {
   installed: {
@@ -52,7 +38,7 @@ const chartConfig = {
   },
 } satisfies ChartConfig;
 
-export function ChartAreaInteractive() {
+export function ChartAreaInteractive({ activity }: { activity: DashboardActivityDto[] }) {
   const isMobile = useIsMobile();
   const [timeRange, setTimeRange] = React.useState("12w");
 
@@ -62,6 +48,19 @@ export function ChartAreaInteractive() {
     }
   }, [isMobile]);
 
+  const activityData = React.useMemo(
+    () =>
+      activity.map((period) => ({
+        week: new Intl.DateTimeFormat("en-US", {
+          month: "short",
+          day: "2-digit",
+          timeZone: "UTC",
+        }).format(new Date(period.periodStartEpochMillis)),
+        installed: period.imported,
+        updated: period.updated,
+      })),
+    [activity],
+  );
   const visibleData = timeRange === "4w" ? activityData.slice(-4) : activityData;
 
   return (

@@ -1,17 +1,15 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState } from "react";
 import {
   RiAddLine,
   RiCheckboxMultipleLine,
-  RiDeleteBinLine,
   RiEditLine,
   RiFolderLine,
-  RiFolderOpenLine,
   RiRefreshLine,
   RiSearchLine,
 } from "@remixicon/react";
 import { toast } from "sonner";
 
-import { skillSets, skills } from "./skills-page";
+import { useWorkspaces } from "@/app/hooks/use-workspaces";
 import { selectDirectory } from "@/app/services/directory-picker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,145 +22,173 @@ import {
   ComboboxItem,
   ComboboxList,
 } from "@/components/ui/combobox";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import type { IpcError } from "@/shared/types/ipc";
+import type {
+  HarnessSummaryDto,
+  WorkspaceReconcileOutcomeDto,
+  WorkspaceSummaryDto,
+} from "@/shared/types/workspaces";
 
-type WorkspaceEntry = {
-  slug: string;
+type WorkspaceTab = "agent" | "project";
+type ProjectWorkspace = Omit<WorkspaceSummaryDto, "kind"> & {
+  kind: Extract<WorkspaceSummaryDto["kind"], { kind: "project" | "linked" }>;
+};
+type WorkspaceListEntry = {
+  id: string;
   name: string;
   path: string;
   count: number;
 };
-
-type AgentSkillTab = "item" | "set";
-type WorkspaceTab = "agent" | "project";
-type AgentEntry = WorkspaceEntry & {
-  skillSlugs: string[];
+type SelectionListItem = {
+  id: string;
+  name: string;
+  subtitle: string;
 };
 
-const agents: AgentEntry[] = [
-  {
-    slug: "claude-code",
-    name: "Claude Code",
-    path: "~/.claude/skills",
-    count: 12,
-    skillSlugs: skills.slice(0, 12).map((skill) => skill.slug),
-  },
-  {
-    slug: "codex",
-    name: "Codex",
-    path: "~/.codex/skills",
-    count: 8,
-    skillSlugs: skills.slice(0, 8).map((skill) => skill.slug),
-  },
-  {
-    slug: "cursor",
-    name: "Cursor",
-    path: "~/.cursor/skills",
-    count: 4,
-    skillSlugs: skills.slice(0, 4).map((skill) => skill.slug),
-  },
-];
-
-const projects: WorkspaceEntry[] = [
-  {
-    slug: "yssbi-project",
-    name: "YssBI project",
-    path: "D:/Projects/YssBI/.agents/skills",
-    count: 8,
-  },
-  {
-    slug: "skills-manager",
-    name: "Skills Manager",
-    path: "D:/Projects/YssSkills/.agents/skills",
-    count: 6,
-  },
-  {
-    slug: "shared-skills",
-    name: "Shared skills",
-    path: "D:/Projects/shared-skills",
-    count: 4,
-  },
-];
-
-function filterEntries(entries: WorkspaceEntry[], query: string) {
-  if (!query) {
-    return entries;
-  }
-
-  return entries.filter((entry) =>
-    `${entry.name} ${entry.path} ${entry.count}`.toLowerCase().includes(query),
-  );
+function isProjectWorkspace(workspace: WorkspaceSummaryDto): workspace is ProjectWorkspace {
+  return workspace.kind.kind === "project" || workspace.kind.kind === "linked";
 }
 
 function getDirectoryName(path: string) {
-  const segments = path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
+  const segments = path
+    .replace(/[\\/]+$/, "")
+    .split(/[\\/]/)
+    .filter(Boolean);
   return segments[segments.length - 1] ?? "Imported project";
+}
+
+function matchesQuery(query: string, values: ReadonlyArray<string | number>) {
+  if (!query) {
+    return true;
+  }
+
+  return values.some((value) => String(value).toLowerCase().includes(query));
+}
+
+function ErrorNotice({
+  title,
+  error,
+  onRetry,
+  isRetrying = false,
+}: {
+  title: string;
+  error: IpcError;
+  onRetry?: () => void;
+  isRetrying?: boolean;
+}) {
+  return (
+    <div className="px-4 py-10 text-center" role="alert" aria-live="polite">
+      <p className="text-sm font-medium">{title}</p>
+      <p className="mt-1 text-sm text-muted-foreground">{error.message}</p>
+      <p className="mt-1 text-[0.65rem] text-muted-foreground">
+        Error code: <code>{error.code}</code>
+      </p>
+      {onRetry ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-4"
+          onClick={onRetry}
+          disabled={isRetrying}
+        >
+          {isRetrying ? "Retrying…" : "Retry"}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+function EmptyState({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="px-4 py-10 text-center" aria-live="polite">
+      <p className="text-sm font-medium">{title}</p>
+      <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+    </div>
+  );
 }
 
 function WorkspaceList({
   items,
-  selectedSlugs,
-  onToggle,
-  onEdit,
+  selectedId = null,
+  disabled = false,
+  onSelect,
+  onClearSelection,
 }: {
-  items: WorkspaceEntry[];
-  selectedSlugs: ReadonlySet<string>;
-  onToggle: (slug: string, checked?: boolean) => void;
-  onEdit?: (slug: string) => void;
+  items: ReadonlyArray<WorkspaceListEntry>;
+  selectedId?: string | null;
+  disabled?: boolean;
+  onSelect?: (id: string) => void | Promise<void>;
+  onClearSelection?: () => void;
 }) {
-  const keepCheckboxesVisible = selectedSlugs.size > 0;
+  const keepCheckboxesVisible = selectedId !== null;
 
   return (
     <div role="list" className="flex min-w-0 flex-col gap-2 text-xs/relaxed">
       {items.map((entry) => {
-        const isSelected = selectedSlugs.has(entry.slug);
+        const isSelected = selectedId === entry.id;
+        const isSelectable = onSelect !== undefined;
 
         return (
           <div
-            key={entry.slug}
-            role="button"
-            tabIndex={0}
-            aria-pressed={isSelected}
+            key={entry.id}
+            role={isSelectable ? "button" : "listitem"}
+            tabIndex={isSelectable ? 0 : undefined}
+            aria-pressed={isSelectable ? isSelected : undefined}
+            aria-disabled={isSelectable && disabled ? true : undefined}
             className="group/workspace-row mx-4 grid min-h-14 min-w-0 grid-cols-[1.5rem_minmax(0,1fr)_minmax(0,2fr)_auto_2rem] items-center gap-3 border px-4 py-2 outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/50"
-            onClick={() => onToggle(entry.slug)}
+            onClick={() => {
+              if (isSelectable && !disabled) {
+                void onSelect(entry.id);
+              }
+            }}
             onKeyDown={(event) => {
-              if (event.target !== event.currentTarget) {
+              if (!isSelectable || disabled || event.target !== event.currentTarget) {
                 return;
               }
 
               if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();
-                onToggle(entry.slug);
+                void onSelect(entry.id);
               }
             }}
           >
             <div className="flex size-6 items-center justify-center">
               <Checkbox
-                aria-label={`Select ${entry.name}`}
+                aria-label={
+                  isSelectable ? `Select ${entry.name}` : `Selection unavailable for ${entry.name}`
+                }
                 checked={isSelected}
+                disabled={disabled || !isSelectable}
                 className={cn(
                   "opacity-0 transition-opacity group-hover/workspace-row:opacity-100 group-focus-within/workspace-row:opacity-100",
                   keepCheckboxesVisible && "opacity-100",
                 )}
                 onClick={(event) => event.stopPropagation()}
-                onCheckedChange={(checked) => onToggle(entry.slug, checked === true)}
+                onCheckedChange={(checked) => {
+                  if (!onSelect) {
+                    return;
+                  }
+
+                  if (checked === true) {
+                    void onSelect(entry.id);
+                  } else if (isSelected) {
+                    onClearSelection?.();
+                  }
+                }}
               />
             </div>
             <div className="flex min-w-0 items-baseline gap-2">
               <h3 className="min-w-0 truncate font-medium">{entry.name}</h3>
             </div>
-            <div className="min-w-0 truncate text-muted-foreground">{entry.path}</div>
+            <div className="min-w-0 truncate text-muted-foreground" title={entry.path}>
+              {entry.path}
+            </div>
             <div className="shrink-0 justify-self-end">
               <Badge variant="secondary">{entry.count}</Badge>
             </div>
@@ -170,13 +196,11 @@ function WorkspaceList({
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label={`Edit ${entry.name}`}
-              title={`Edit ${entry.name}`}
+              aria-label={`Edit unavailable for ${entry.name}`}
+              title="Workspace editing is unavailable"
               className="justify-self-end"
-              onClick={(event) => {
-                event.stopPropagation();
-                onEdit?.(entry.slug);
-              }}
+              disabled
+              onClick={(event) => event.stopPropagation()}
             >
               <RiEditLine aria-hidden="true" />
             </Button>
@@ -187,32 +211,29 @@ function WorkspaceList({
   );
 }
 
-type SelectionListItem = {
-  slug: string;
-  name: string;
-  subtitle: string;
-};
-
 function SelectionList({
   items,
-  selectedSlugs,
+  selectedId,
+  disabled,
   onToggle,
 }: {
   items: ReadonlyArray<SelectionListItem>;
-  selectedSlugs: ReadonlySet<string>;
-  onToggle: (slug: string, checked: boolean) => void;
+  selectedId: string | null;
+  disabled: boolean;
+  onToggle: (id: string, checked: boolean) => void;
 }) {
   return (
     <div role="list" className="flex flex-col p-1">
       {items.map((item) => (
         <label
-          key={item.slug}
+          key={item.id}
           className="flex min-w-0 cursor-pointer items-center gap-2 px-2 py-1.5 hover:bg-muted"
         >
           <Checkbox
             aria-label={`Select ${item.name}`}
-            checked={selectedSlugs.has(item.slug)}
-            onCheckedChange={(checked) => onToggle(item.slug, checked === true)}
+            checked={selectedId === item.id}
+            disabled={disabled}
+            onCheckedChange={(checked) => onToggle(item.id, checked === true)}
           />
           <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
             <span className="min-w-0 flex-1 truncate text-xs font-medium">{item.name}</span>
@@ -226,122 +247,95 @@ function SelectionList({
   );
 }
 
+function syncIssueCount(outcome: WorkspaceReconcileOutcomeDto) {
+  return (
+    outcome.requested.finalReport.diagnostics.length +
+    outcome.propagated.reduce(
+      (count, propagation) =>
+        count +
+        (propagation.error ? 1 : 0) +
+        (propagation.report?.finalReport.diagnostics.length ?? 0),
+      0,
+    )
+  );
+}
+
+function harnessToListEntry(harness: HarnessSummaryDto): WorkspaceListEntry {
+  const path =
+    harness.probe?.globalSkillsPath.display ??
+    (harness.error
+      ? `${harness.error.message} (${harness.error.code})`
+      : "Unavailable (probe unavailable)");
+
+  return {
+    id: harness.id,
+    name: harness.displayName,
+    path,
+    count: harness.deploymentCount,
+  };
+}
+
+function projectToListEntry(workspace: ProjectWorkspace): WorkspaceListEntry {
+  return {
+    id: workspace.id,
+    name: workspace.name,
+    path: workspace.kind.root.display,
+    count: workspace.deploymentCount,
+  };
+}
+
 export function WorkspacesPage() {
+  const {
+    overview,
+    error: overviewError,
+    isLoading,
+    isRefreshing,
+    refresh,
+    isObserving,
+    isMutating,
+    observe,
+    createProject,
+    reconcile,
+  } = useWorkspaces();
   const [query, setQuery] = useState("");
-  const [agentItems, setAgentItems] = useState(agents);
-  const [projectItems, setProjectItems] = useState(projects);
-  const [selectedProjectSlug, setSelectedProjectSlug] = useState(projects[0]?.slug ?? "");
-  const [selectedSlugs, setSelectedSlugs] = useState<Set<string>>(() => new Set());
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("agent");
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [isProjectListOpen, setIsProjectListOpen] = useState(false);
   const [isSelectingProject, setIsSelectingProject] = useState(false);
-  const [isAddAgentOpen, setIsAddAgentOpen] = useState(false);
-  const [editingAgentSlug, setEditingAgentSlug] = useState<string | null>(null);
-  const [newAgentName, setNewAgentName] = useState("");
-  const [newAgentPath, setNewAgentPath] = useState("");
-  const [isSelectingAgentPath, setIsSelectingAgentPath] = useState(false);
-  const [newAgentSkillSlugs, setNewAgentSkillSlugs] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const [newAgentSkillTab, setNewAgentSkillTab] = useState<AgentSkillTab>("item");
+  const [syncingWorkspaceId, setSyncingWorkspaceId] = useState<string | null>(null);
   const normalizedQuery = query.trim().toLowerCase();
 
-  const toggleSelection = (slug: string, checked?: boolean) => {
-    setSelectedSlugs((current) => {
-      const next = new Set(current);
-      const shouldSelect = checked ?? !next.has(slug);
-
-      if (shouldSelect) {
-        next.add(slug);
-      } else {
-        next.delete(slug);
-      }
-
-      return next;
-    });
-  };
-
-  const filteredAgents = useMemo(
-    () => filterEntries(agentItems, normalizedQuery),
-    [agentItems, normalizedQuery],
+  const projectWorkspaces = useMemo(
+    () => overview?.workspaces.filter(isProjectWorkspace) ?? [],
+    [overview],
+  );
+  const filteredHarnesses = useMemo(
+    () =>
+      (overview?.harnesses ?? []).filter((harness) =>
+        matchesQuery(normalizedQuery, [
+          harness.displayName,
+          harness.probe?.globalSkillsPath.display ?? "unavailable",
+          harness.probe?.detectionStatus ?? "unavailable",
+          harness.deploymentCount,
+          harness.error?.message ?? "",
+        ]),
+      ),
+    [normalizedQuery, overview],
   );
   const filteredProjects = useMemo(
-    () => filterEntries(projectItems, normalizedQuery),
-    [normalizedQuery, projectItems],
+    () =>
+      projectWorkspaces.filter((workspace) =>
+        matchesQuery(normalizedQuery, [
+          workspace.name,
+          workspace.kind.kind,
+          workspace.kind.root.display,
+          workspace.deploymentCount,
+          workspace.deploymentMode,
+        ]),
+      ),
+    [normalizedQuery, projectWorkspaces],
   );
-
-  const selectableSlugs = [...filteredAgents, ...filteredProjects].map((entry) => entry.slug);
-  const allVisibleItemsSelected =
-    selectableSlugs.length > 0 && selectableSlugs.every((slug) => selectedSlugs.has(slug));
-  const projectSlugs = filteredProjects.map((project) => project.slug);
-  const allProjectsSelected =
-    projectSlugs.length > 0 && projectSlugs.every((slug) => selectedSlugs.has(slug));
-  const hasSelectedProjects = projectSlugs.some((slug) => selectedSlugs.has(slug));
-
-  const toggleSelectAll = () => {
-    setSelectedSlugs((current) => {
-      const next = new Set(current);
-
-      selectableSlugs.forEach((slug) => {
-        if (allVisibleItemsSelected) {
-          next.delete(slug);
-        } else {
-          next.add(slug);
-        }
-      });
-
-      return next;
-    });
-  };
-
-  const toggleSelectAllProjects = () => {
-    setSelectedSlugs((current) => {
-      const next = new Set(current);
-
-      projectSlugs.forEach((slug) => {
-        if (allProjectsSelected) {
-          next.delete(slug);
-        } else {
-          next.add(slug);
-        }
-      });
-
-      return next;
-    });
-  };
-
-  const handleImportProject = async () => {
-    setIsSelectingProject(true);
-
-    try {
-      const selectedPath = await selectDirectory("Import project");
-
-      if (!selectedPath) {
-        return;
-      }
-
-      const name = getDirectoryName(selectedPath);
-      const slugBase =
-        name
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "-")
-          .replace(/^-+|-+$/g, "") || "project";
-      const importedProject = {
-        slug: `${slugBase}-${Date.now()}`,
-        name,
-        path: selectedPath,
-        count: 0,
-      };
-
-      setProjectItems((current) => [...current, importedProject]);
-      setSelectedProjectSlug(importedProject.slug);
-      toast.success("Project imported.");
-    } catch {
-      toast.error("Unable to import the project folder.");
-    } finally {
-      setIsSelectingProject(false);
-    }
-  };
+  const selectedProject = projectWorkspaces.find((workspace) => workspace.id === selectedProjectId);
 
   const handleTabChange = (value: string) => {
     if (value === "agent" || value === "project") {
@@ -349,119 +343,114 @@ export function WorkspacesPage() {
     }
   };
 
-  const openAddAgentDialog = () => {
-    setEditingAgentSlug(null);
-    setNewAgentName("");
-    setNewAgentPath("");
-    setNewAgentSkillSlugs(new Set());
-    setNewAgentSkillTab("item");
-    setIsAddAgentOpen(true);
+  const clearSelectedProject = () => {
+    setSelectedProjectId(null);
   };
 
-  const openEditAgentDialog = (slug: string) => {
-    const agent = agentItems.find((item) => item.slug === slug);
-    if (!agent) {
+  const handleSelectProject = async (workspaceId: string) => {
+    setSelectedProjectId(workspaceId);
+    setIsProjectListOpen(true);
+    const nextObservation = await observe(workspaceId);
+    if (!nextObservation) {
+      toast.error("Unable to observe the project workspace.");
+    }
+  };
+
+  const handleProjectValueChange = (workspaceId: string | null) => {
+    if (!workspaceId) {
+      clearSelectedProject();
       return;
     }
 
-    setEditingAgentSlug(slug);
-    setNewAgentName(agent.name);
-    setNewAgentPath(agent.path);
-    setNewAgentSkillSlugs(new Set(agent.skillSlugs));
-    setNewAgentSkillTab("item");
-    setIsAddAgentOpen(true);
+    void handleSelectProject(workspaceId);
   };
 
-  const handleAgentSkillTabChange = (value: string) => {
-    if (value === "item" || value === "set") {
-      setNewAgentSkillTab(value);
-    }
-  };
-
-  const handleSelectAgentPath = async () => {
-    setIsSelectingAgentPath(true);
+  const handleAddProject = async () => {
+    setIsSelectingProject(true);
 
     try {
-      const selectedPath = await selectDirectory("Select agent skills directory");
+      const root = await selectDirectory("Add project");
 
-      if (selectedPath) {
-        setNewAgentPath(selectedPath);
+      if (!root) {
+        return;
       }
+
+      const created = await createProject(getDirectoryName(root), root);
+      if (!created) {
+        setIsProjectListOpen(true);
+        toast.error("Unable to add the project. See the error details on this page.");
+        return;
+      }
+
+      setActiveTab("project");
+      setQuery("");
+      setSelectedProjectId(created.id);
+      setIsProjectListOpen(true);
+      await observe(created.id);
+      toast.success("Project added.");
     } catch {
-      toast.error("Unable to open the agent path picker.");
+      toast.error("Unable to open the project folder picker.");
     } finally {
-      setIsSelectingAgentPath(false);
+      setIsSelectingProject(false);
     }
   };
 
-  const toggleNewAgentSkill = (slug: string, checked: boolean) => {
-    setNewAgentSkillSlugs((current) => {
-      const next = new Set(current);
+  const handleRefresh = async () => {
+    const selectedId = selectedProjectId;
+    const nextOverview = await refresh();
 
-      if (checked) {
-        next.add(slug);
-      } else {
-        next.delete(slug);
+    if (!nextOverview) {
+      toast.error("Unable to refresh the workspace overview.");
+      return;
+    }
+
+    const selectedStillExists =
+      selectedId !== null &&
+      nextOverview.workspaces.some(
+        (workspace) => workspace.id === selectedId && isProjectWorkspace(workspace),
+      );
+
+    if (selectedId && selectedStillExists) {
+      await observe(selectedId);
+    } else if (selectedId) {
+      clearSelectedProject();
+    }
+
+    toast.success("Workspace overview refreshed.");
+  };
+
+  const handleSync = async (workspaceId = selectedProjectId) => {
+    if (!workspaceId) {
+      return;
+    }
+
+    setSelectedProjectId(workspaceId);
+    setSyncingWorkspaceId(workspaceId);
+    setIsProjectListOpen(true);
+
+    try {
+      const outcome = await reconcile(workspaceId);
+      if (!outcome) {
+        toast.error("Workspace sync failed. See the error details on this page.");
+        return;
       }
 
-      return next;
-    });
+      const issueCount = syncIssueCount(outcome);
+      if (issueCount > 0) {
+        toast.warning(
+          `Workspace sync completed with ${issueCount} diagnostic${issueCount === 1 ? "" : "s"}.`,
+        );
+      } else {
+        toast.success("Workspace sync completed.");
+      }
+    } finally {
+      setSyncingWorkspaceId(null);
+    }
   };
 
-  const handleAddAgent = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
-    const name = newAgentName.trim();
-    const path = newAgentPath.trim();
-
-    if (!name || !path) {
-      toast.error("Enter an agent name and path.");
-      return;
-    }
-
-    if (newAgentSkillSlugs.size === 0) {
-      toast.error("Select at least one skill.");
-      return;
-    }
-
-    if (editingAgentSlug) {
-      setAgentItems((current) =>
-        current.map((agent) =>
-          agent.slug === editingAgentSlug
-            ? {
-                ...agent,
-                name,
-                path,
-                count: newAgentSkillSlugs.size,
-                skillSlugs: [...newAgentSkillSlugs],
-              }
-            : agent,
-        ),
-      );
-      setIsAddAgentOpen(false);
-      toast.success("Agent updated.");
-      return;
-    }
-
-    const slugBase =
-      name
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "") || "agent";
-
-    setAgentItems((current) => [
-      ...current,
-      {
-        slug: `${slugBase}-${Date.now()}`,
-        name,
-        path,
-        count: newAgentSkillSlugs.size,
-        skillSlugs: [...newAgentSkillSlugs],
-      },
-    ]);
-    setIsAddAgentOpen(false);
-    toast.success("Agent added.");
-  };
+  const isOverviewBusy = isLoading || isRefreshing;
+  const isSyncingSelected = selectedProjectId !== null && syncingWorkspaceId === selectedProjectId;
+  const workspaceActionsDisabled = isRefreshing || isMutating || isObserving;
 
   return (
     <>
@@ -472,13 +461,22 @@ export function WorkspacesPage() {
             type="button"
             variant="outline"
             size="sm"
-            aria-pressed={allVisibleItemsSelected}
-            onClick={toggleSelectAll}
+            aria-label="Select all unavailable"
+            title="Bulk workspace selection is unavailable"
+            disabled
           >
             <RiCheckboxMultipleLine aria-hidden="true" data-icon="inline-start" />
-            {allVisibleItemsSelected ? "Deselect all" : "Select all"}
+            Select all
           </Button>
-          <Button type="button" variant="outline" size="sm" onClick={openAddAgentDialog}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-busy={isSelectingProject || isMutating}
+            title="Add a project workspace"
+            onClick={() => void handleAddProject()}
+            disabled={isSelectingProject || isMutating}
+          >
             <RiAddLine aria-hidden="true" data-icon="inline-start" />
             Add
           </Button>
@@ -492,7 +490,14 @@ export function WorkspacesPage() {
             <RiFolderLine aria-hidden="true" data-icon="inline-start" />
             Project list
           </Button>
-          <Button type="button" variant="outline" size="sm">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            title="Reload workspace data without reconciling or writing changes"
+            onClick={() => void handleRefresh()}
+            disabled={isOverviewBusy || isMutating}
+          >
             <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
             Refresh
           </Button>
@@ -500,104 +505,140 @@ export function WorkspacesPage() {
       </header>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border bg-background">
-        <Tabs
-          value={activeTab}
-          onValueChange={handleTabChange}
-          className="min-h-0 min-w-0 flex-1 gap-0"
-        >
-          <div className="flex w-full min-w-0 items-center gap-2 p-4">
-            <div className="relative min-w-0 flex-1">
-              <RiSearchLine
-                aria-hidden="true"
-                className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground"
-              />
-              <Input
-                aria-label="Search agents and projects"
-                value={query}
-                onChange={(event) => setQuery(event.currentTarget.value)}
-                placeholder="Search agents and projects"
-                className="pl-8"
-              />
+        {isLoading && !overview ? (
+          <EmptyState
+            title="Loading workspaces…"
+            description="Reading workspace data from the backend."
+          />
+        ) : !overview ? (
+          overviewError ? (
+            <ErrorNotice
+              title="Unable to load workspaces"
+              error={overviewError}
+              onRetry={() => void handleRefresh()}
+              isRetrying={isLoading}
+            />
+          ) : (
+            <EmptyState
+              title="Workspace overview unavailable"
+              description="Refresh to load workspace data from the backend."
+            />
+          )
+        ) : (
+          <Tabs
+            value={activeTab}
+            onValueChange={handleTabChange}
+            className="min-h-0 min-w-0 flex-1 gap-0"
+          >
+            <div className="flex w-full min-w-0 items-center gap-2 p-4">
+              <div className="relative min-w-0 flex-1">
+                <RiSearchLine
+                  aria-hidden="true"
+                  className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground"
+                />
+                <Input
+                  aria-label="Search agents and projects"
+                  value={query}
+                  onChange={(event) => setQuery(event.currentTarget.value)}
+                  placeholder="Search agents and projects"
+                  className="pl-8"
+                />
+              </div>
+              {activeTab === "project" ? (
+                <Combobox
+                  items={projectWorkspaces.map((workspace) => workspace.id)}
+                  value={selectedProjectId ?? ""}
+                  onValueChange={handleProjectValueChange}
+                  itemToStringValue={(workspaceId) =>
+                    projectWorkspaces.find((workspace) => workspace.id === workspaceId)?.name ??
+                    workspaceId
+                  }
+                >
+                  <ComboboxInput
+                    aria-label="Project"
+                    placeholder="Select project"
+                    className="w-48 shrink-0"
+                    disabled={workspaceActionsDisabled}
+                  />
+                  <ComboboxContent>
+                    <ComboboxEmpty>No matching projects</ComboboxEmpty>
+                    <ComboboxList>
+                      {(workspaceId) => {
+                        const workspace = projectWorkspaces.find((item) => item.id === workspaceId);
+                        if (!workspace) {
+                          return null;
+                        }
+
+                        return (
+                          <ComboboxItem key={workspace.id} value={workspace.id}>
+                            <span className="min-w-0 truncate">{workspace.name}</span>
+                          </ComboboxItem>
+                        );
+                      }}
+                    </ComboboxList>
+                  </ComboboxContent>
+                </Combobox>
+              ) : null}
+              <TabsList className="shrink-0">
+                <TabsTrigger value="agent">Agent</TabsTrigger>
+                <TabsTrigger value="project">Project</TabsTrigger>
+              </TabsList>
             </div>
-            {activeTab === "project" ? (
-              <Combobox
-                items={projectItems.map((project) => project.slug)}
-                value={selectedProjectSlug}
-                onValueChange={(value) => setSelectedProjectSlug(value ?? "")}
-                itemToStringValue={(slug) =>
-                  projectItems.find((project) => project.slug === slug)?.name ?? slug
-                }
-              >
-                <ComboboxInput
-                  aria-label="Project"
-                  placeholder="Select project"
-                  className="w-48 shrink-0"
-                />
-                <ComboboxContent>
-                  <ComboboxEmpty>No matching projects</ComboboxEmpty>
-                  <ComboboxList>
-                    {(projectSlug) => {
-                      const project = projectItems.find((item) => item.slug === projectSlug);
-                      if (!project) {
-                        return null;
-                      }
 
-                      return (
-                        <ComboboxItem key={project.slug} value={project.slug}>
-                          <span className="min-w-0 truncate">{project.name}</span>
-                        </ComboboxItem>
-                      );
-                    }}
-                  </ComboboxList>
-                </ComboboxContent>
-              </Combobox>
+            {overviewError ? (
+              <div className="shrink-0 border-t border-input">
+                <ErrorNotice
+                  title="Workspace refresh failed"
+                  error={overviewError}
+                  onRetry={() => void handleRefresh()}
+                  isRetrying={isRefreshing}
+                />
+              </div>
             ) : null}
-            <TabsList className="shrink-0">
-              <TabsTrigger value="agent">
-                Agent
-              </TabsTrigger>
-              <TabsTrigger value="project">
-                Project
-              </TabsTrigger>
-            </TabsList>
-          </div>
 
-          <TabsContent value="agent" className="flex min-h-0 min-w-0 flex-1 flex-col">
-            {filteredAgents.length > 0 ? (
-              <ScrollArea className="min-h-0 min-w-0 flex-1">
-                <WorkspaceList
-                  items={filteredAgents}
-                  selectedSlugs={selectedSlugs}
-                  onToggle={toggleSelection}
-                  onEdit={openEditAgentDialog}
+            <TabsContent value="agent" className="flex min-h-0 min-w-0 flex-1 flex-col">
+              {filteredHarnesses.length > 0 ? (
+                <ScrollArea className="min-h-0 min-w-0 flex-1" aria-busy={isRefreshing}>
+                  <WorkspaceList items={filteredHarnesses.map(harnessToListEntry)} />
+                </ScrollArea>
+              ) : overview.harnesses.length === 0 ? (
+                <EmptyState
+                  title="No agents available"
+                  description="The backend did not report any agent harnesses."
                 />
-              </ScrollArea>
-            ) : (
-              <div className="px-4 py-10 text-center" aria-live="polite">
-                <p className="text-sm font-medium">No matching results</p>
-                <p className="mt-1 text-sm text-muted-foreground">Try a different search term.</p>
-              </div>
-            )}
-          </TabsContent>
+              ) : (
+                <EmptyState
+                  title="No matching results"
+                  description="Try a different search term."
+                />
+              )}
+            </TabsContent>
 
-          <TabsContent value="project" className="flex min-h-0 min-w-0 flex-1 flex-col">
-            {filteredAgents.length > 0 ? (
-              <ScrollArea className="min-h-0 min-w-0 flex-1">
-                <WorkspaceList
-                  items={filteredAgents}
-                  selectedSlugs={selectedSlugs}
-                  onToggle={toggleSelection}
-                  onEdit={openEditAgentDialog}
+            <TabsContent value="project" className="flex min-h-0 min-w-0 flex-1 flex-col">
+              {filteredProjects.length > 0 ? (
+                <ScrollArea className="min-h-0 min-w-0 flex-1" aria-busy={workspaceActionsDisabled}>
+                  <WorkspaceList
+                    items={filteredProjects.map(projectToListEntry)}
+                    selectedId={selectedProjectId}
+                    disabled={workspaceActionsDisabled}
+                    onSelect={handleSelectProject}
+                    onClearSelection={clearSelectedProject}
+                  />
+                </ScrollArea>
+              ) : projectWorkspaces.length === 0 ? (
+                <EmptyState
+                  title="No projects yet"
+                  description="Use Add project to register a project directory."
                 />
-              </ScrollArea>
-            ) : (
-              <div className="px-4 py-10 text-center" aria-live="polite">
-                <p className="text-sm font-medium">No matching results</p>
-                <p className="mt-1 text-sm text-muted-foreground">Try a different search term.</p>
-              </div>
-            )}
-          </TabsContent>
-        </Tabs>
+              ) : (
+                <EmptyState
+                  title="No matching results"
+                  description="Try a different search term."
+                />
+              )}
+            </TabsContent>
+          </Tabs>
+        )}
       </div>
 
       <Dialog open={isProjectListOpen} onOpenChange={setIsProjectListOpen}>
@@ -606,34 +647,52 @@ export function WorkspacesPage() {
             <DialogTitle>Project list</DialogTitle>
           </DialogHeader>
           <ScrollArea className="min-h-0 flex-1 border border-input">
-            <SelectionList
-              items={filteredProjects.map((project) => ({
-                slug: project.slug,
-                name: project.name,
-                subtitle: project.path,
-              }))}
-              selectedSlugs={selectedSlugs}
-              onToggle={toggleSelection}
-            />
+            {filteredProjects.length > 0 ? (
+              <SelectionList
+                items={filteredProjects.map((project) => ({
+                  id: project.id,
+                  name: project.name,
+                  subtitle: project.kind.root.display,
+                }))}
+                selectedId={selectedProjectId}
+                disabled={workspaceActionsDisabled}
+                onToggle={(workspaceId, checked) => {
+                  if (checked) {
+                    void handleSelectProject(workspaceId);
+                  } else if (workspaceId === selectedProjectId) {
+                    clearSelectedProject();
+                  }
+                }}
+              />
+            ) : projectWorkspaces.length === 0 ? (
+              <EmptyState
+                title="No projects yet"
+                description="Use Add project to register a project directory."
+              />
+            ) : (
+              <EmptyState title="No matching results" description="Try a different search term." />
+            )}
           </ScrollArea>
           <div className="flex shrink-0 items-center justify-between gap-2">
             <Button
               type="button"
               variant="outline"
               size="sm"
-              aria-pressed={allProjectsSelected}
-              onClick={toggleSelectAllProjects}
+              aria-label="Select all unavailable"
+              title="Bulk project selection is unavailable"
+              disabled
             >
               <RiCheckboxMultipleLine aria-hidden="true" data-icon="inline-start" />
-              {allProjectsSelected ? "Deselect all" : "Select all"}
+              Select all
             </Button>
             <div className="flex items-center gap-2">
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => void handleImportProject()}
-                disabled={isSelectingProject}
+                aria-busy={isSelectingProject || isMutating}
+                onClick={() => void handleAddProject()}
+                disabled={isSelectingProject || isMutating}
               >
                 <RiAddLine aria-hidden="true" data-icon="inline-start" />
                 Add
@@ -642,117 +701,15 @@ export function WorkspacesPage() {
                 type="button"
                 variant="destructive"
                 size="sm"
-                disabled={!hasSelectedProjects}
+                onClick={() => void handleSync()}
+                disabled={!selectedProject || isMutating || isRefreshing || isObserving}
+                title="Reconcile the selected workspace; this operation may write changes"
               >
-                <RiDeleteBinLine aria-hidden="true" data-icon="inline-start" />
-                Delete
+                <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
+                {isSyncingSelected ? "Syncing…" : "Sync"}
               </Button>
             </div>
           </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={isAddAgentOpen} onOpenChange={setIsAddAgentOpen}>
-        <DialogContent className="flex h-[min(80vh,720px)] max-w-2xl flex-col overflow-hidden">
-          <DialogHeader>
-            <DialogTitle>{editingAgentSlug ? "Edit agent" : "Add agent"}</DialogTitle>
-          </DialogHeader>
-          <form className="flex min-h-0 flex-1 flex-col gap-4" onSubmit={handleAddAgent}>
-            <div className="flex items-start justify-between gap-4">
-              <label className="flex min-w-0 flex-1 flex-col gap-1.5" htmlFor="agent-name">
-                <span className="font-medium">Agent name</span>
-                <Input
-                  id="agent-name"
-                  value={newAgentName}
-                  onChange={(event) => setNewAgentName(event.currentTarget.value)}
-                  placeholder="Agent name"
-                  required
-                />
-              </label>
-
-              <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                <label className="font-medium" htmlFor="agent-path">
-                  Agent path
-                </label>
-                <div className="flex min-w-0 items-center gap-2">
-                  <Input
-                    id="agent-path"
-                    value={newAgentPath}
-                    placeholder="Choose an agent skills directory"
-                    title={newAgentPath || "No agent path selected"}
-                    readOnly
-                    required
-                    className="min-w-0 flex-1"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="icon-sm"
-                    aria-label="Choose agent path"
-                    title="Choose agent path"
-                    onClick={() => void handleSelectAgentPath()}
-                    disabled={isSelectingAgentPath}
-                  >
-                    <RiFolderOpenLine aria-hidden="true" />
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            <fieldset className="flex min-h-0 flex-1 flex-col">
-              <legend className="sr-only">Skills</legend>
-              <Tabs
-                value={newAgentSkillTab}
-                onValueChange={handleAgentSkillTabChange}
-                className="min-h-0 flex-1 gap-1.5"
-              >
-                <div className="flex items-end justify-between gap-4">
-                  <span className="font-medium">Skills</span>
-                  <TabsList className="shrink-0">
-                    <TabsTrigger value="item">Item</TabsTrigger>
-                    <TabsTrigger value="set">Set</TabsTrigger>
-                  </TabsList>
-                </div>
-
-                <TabsContent value="item" className="flex min-h-0 flex-1 flex-col">
-                  <ScrollArea className="min-h-0 flex-1 border border-input">
-                    <SelectionList
-                      items={skills.map((skill) => ({
-                        slug: skill.slug,
-                        name: skill.name,
-                        subtitle: skill.source,
-                      }))}
-                      selectedSlugs={newAgentSkillSlugs}
-                      onToggle={toggleNewAgentSkill}
-                    />
-                  </ScrollArea>
-                </TabsContent>
-
-                <TabsContent value="set" className="flex min-h-0 flex-1 flex-col">
-                  <ScrollArea className="min-h-0 flex-1 border border-input">
-                    <SelectionList
-                      items={skillSets.map((skillSet) => ({
-                        slug: skillSet.slug,
-                        name: skillSet.name,
-                        subtitle: skillSet.scope,
-                      }))}
-                      selectedSlugs={newAgentSkillSlugs}
-                      onToggle={toggleNewAgentSkill}
-                    />
-                  </ScrollArea>
-                </TabsContent>
-              </Tabs>
-            </fieldset>
-
-            <DialogFooter>
-              <DialogClose asChild>
-                <Button type="button" variant="outline">
-                  Cancel
-                </Button>
-              </DialogClose>
-              <Button type="submit">{editingAgentSlug ? "Save changes" : "Add agent"}</Button>
-            </DialogFooter>
-          </form>
         </DialogContent>
       </Dialog>
     </>

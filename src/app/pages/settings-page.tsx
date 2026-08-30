@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
-import { RiFolderOpenLine } from "@remixicon/react";
+import { RiFolderOpenLine, RiRefreshLine } from "@remixicon/react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 
+import { useAppSettings } from "@/app/hooks/use-app-settings";
 import { selectDirectory } from "@/app/services/directory-picker";
 
 import { Button } from "@/components/ui/button";
@@ -21,8 +22,34 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export function SettingsPage() {
   const { theme, setTheme } = useTheme();
-  const [centralSkillsPath, setCentralSkillsPath] = useState("D:/Projects/shared-skills");
+  const {
+    settings,
+    error,
+    isLoading,
+    isRefreshing,
+    refresh,
+    updateError,
+    isUpdating,
+    updateCatalogRoot,
+  } = useAppSettings();
+  const [updatedCatalogRootDisplay, setUpdatedCatalogRootDisplay] = useState<string | null>(null);
   const [isSelectingCentralSkillsPath, setIsSelectingCentralSkillsPath] = useState(false);
+
+  const catalogRootDisplay = updatedCatalogRootDisplay ?? settings?.catalogRoot.display ?? "";
+  const isChoosingCatalogRoot = isSelectingCentralSkillsPath || isUpdating;
+
+  useEffect(() => {
+    if (updateError) {
+      toast.error(updateError.message);
+    }
+  }, [updateError]);
+
+  const handleRetrySettings = async () => {
+    const refreshedSettings = await refresh();
+    if (refreshedSettings !== null) {
+      setUpdatedCatalogRootDisplay(refreshedSettings.catalogRoot.display);
+    }
+  };
 
   const handleSelectCentralSkillsPath = async () => {
     setIsSelectingCentralSkillsPath(true);
@@ -30,8 +57,13 @@ export function SettingsPage() {
     try {
       const selectedPath = await selectDirectory("Select central skills repository");
 
-      if (selectedPath) {
-        setCentralSkillsPath(selectedPath);
+      if (selectedPath === null) {
+        return;
+      }
+
+      const updatedSettings = await updateCatalogRoot(selectedPath);
+      if (updatedSettings !== null) {
+        setUpdatedCatalogRootDisplay(updatedSettings.catalogRoot.display);
       }
     } catch {
       toast.error("Unable to open the folder picker.");
@@ -42,7 +74,6 @@ export function SettingsPage() {
 
   return (
     <div className="flex flex-1 flex-col">
-
       <div className="p-4 lg:p-6">
         <Tabs defaultValue="general" className="w-full">
           <TabsList>
@@ -51,32 +82,95 @@ export function SettingsPage() {
           </TabsList>
 
           <TabsContent value="general" className="mt-4">
-            <Card>
+            <Card aria-busy={isLoading || isRefreshing || isUpdating}>
               <CardContent className="flex flex-col gap-5">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex min-w-0 flex-col gap-1">
-                    <span className="font-medium">Central skills repository</span>
-                    <span
-                      aria-live="polite"
-                      className="truncate text-sm text-muted-foreground"
-                      title={centralSkillsPath}
+                {isLoading && settings === null ? (
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <span className="font-medium">Central skills repository</span>
+                      <span aria-live="polite" className="truncate text-sm text-muted-foreground">
+                        Loading settings...
+                      </span>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      aria-label="Choose central skills repository"
+                      disabled
                     >
-                      {centralSkillsPath}
-                    </span>
+                      <RiFolderOpenLine aria-hidden="true" data-icon="inline-start" />
+                      Choose
+                    </Button>
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    aria-label="Choose central skills repository"
-                    onClick={() => void handleSelectCentralSkillsPath()}
-                    disabled={isSelectingCentralSkillsPath}
+                ) : error ? (
+                  <div
+                    className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+                    role="alert"
                   >
-                    <RiFolderOpenLine aria-hidden="true" data-icon="inline-start" />
-                    Choose
-                  </Button>
-                </div>
-
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <span className="font-medium">Central skills repository</span>
+                      <span
+                        className="truncate text-sm text-muted-foreground"
+                        title={error.message}
+                      >
+                        Unable to load settings: {error.message}
+                      </span>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={isLoading || isRefreshing}
+                      onClick={() => void handleRetrySettings()}
+                    >
+                      <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
+                      Retry
+                    </Button>
+                  </div>
+                ) : settings ? (
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <span className="font-medium">Central skills repository</span>
+                      <span
+                        aria-live="polite"
+                        className="truncate text-sm text-muted-foreground"
+                        title={catalogRootDisplay}
+                      >
+                        {catalogRootDisplay}
+                      </span>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      aria-label="Choose central skills repository"
+                      onClick={() => void handleSelectCentralSkillsPath()}
+                      disabled={isChoosingCatalogRoot}
+                    >
+                      <RiFolderOpenLine aria-hidden="true" data-icon="inline-start" />
+                      Choose
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <span className="font-medium">Central skills repository</span>
+                      <span className="truncate text-sm text-muted-foreground">
+                        Settings are unavailable.
+                      </span>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void handleRetrySettings()}
+                    >
+                      <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
+                      Retry
+                    </Button>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
@@ -88,15 +182,11 @@ export function SettingsPage() {
                   <div className="flex flex-col gap-1">
                     <span className="font-medium">Language</span>
                     <span className="text-sm text-muted-foreground">
-                      Choose the language for the interface.
+                      Language switching is not available yet.
                     </span>
                   </div>
-                  <Select defaultValue="zh-CN">
-                    <SelectTrigger
-                      className="w-full sm:w-48"
-                      size="sm"
-                      aria-label="Language"
-                    >
+                  <Select defaultValue="zh-CN" disabled>
+                    <SelectTrigger className="w-full sm:w-48" size="sm" aria-label="Language">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>

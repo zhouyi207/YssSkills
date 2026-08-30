@@ -1,24 +1,17 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState } from "react";
 import {
   RiAddLine,
   RiCheckboxMultipleLine,
-  RiCommandLine,
-  RiDatabase2Line,
   RiDeleteBinLine,
   RiDownloadLine,
-  RiEditLine,
   RiEyeLine,
-  RiFileTextLine,
   RiRefreshLine,
   RiSearchLine,
-  RiStackLine,
-  RiTerminalLine,
   RiUploadLine,
 } from "@remixicon/react";
 import ReactMarkdown from "react-markdown";
-import { toast } from "sonner";
 
-import { selectSkillExportPath, selectSkillFiles } from "@/app/services/file-picker";
+import { useCatalogSkills } from "@/app/hooks/use-catalog-skills";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -33,410 +26,64 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import type { CatalogSkillSummaryDto, SkillSourceDto } from "@/shared/types/skills";
 
-export const skills = [
-  {
-    name: "Rust patterns",
-    slug: "rust-patterns",
-    description: "Ownership, error handling, traits, and concurrency patterns.",
-    source: "Built-in",
-    scope: "Global",
-    updated: "Updated today",
-    status: "Ready",
-    icon: RiTerminalLine,
-  },
-  {
-    name: "Test-driven development",
-    slug: "test-driven-development",
-    description: "A red-green-refactor loop for changes that stay verifiable.",
-    source: "Local",
-    scope: "YssBI",
-    updated: "Updated yesterday",
-    status: "Syncing",
-    icon: RiFileTextLine,
-  },
-  {
-    name: "Systematic debugging",
-    slug: "systematic-debugging",
-    description: "Evidence-first isolation of bugs, failures, and regressions.",
-    source: "Local",
-    scope: "YssBI",
-    updated: "Updated 2 days ago",
-    status: "Review",
-    icon: RiCommandLine,
-  },
-  {
-    name: "Frontend design",
-    slug: "frontend-design",
-    description: "A visual language for purposeful, non-template interfaces.",
-    source: "Registry",
-    scope: "Global",
-    updated: "Updated 4 days ago",
-    status: "Ready",
-    icon: RiDatabase2Line,
-  },
-  {
-    name: "Codebase design",
-    slug: "codebase-design",
-    description: "Shared vocabulary for clear module boundaries and interfaces.",
-    source: "Built-in",
-    scope: "Global",
-    updated: "Updated 5 days ago",
-    status: "Ready",
-    icon: RiStackLine,
-  },
-  {
-    name: "Software development process",
-    slug: "software-dev-process",
-    description: "Practical standards for architecture, testing, and delivery.",
-    source: "Built-in",
-    scope: "Global",
-    updated: "Updated 6 days ago",
-    status: "Ready",
-    icon: RiCommandLine,
-  },
-  {
-    name: "Verification before completion",
-    slug: "verification-before-completion",
-    description: "Evidence-based checks before declaring work complete.",
-    source: "Built-in",
-    scope: "Global",
-    updated: "Updated 1 week ago",
-    status: "Ready",
-    icon: RiFileTextLine,
-  },
-  {
-    name: "Requesting code review",
-    slug: "requesting-code-review",
-    description: "A focused checklist for getting useful feedback before merging.",
-    source: "Built-in",
-    scope: "Global",
-    updated: "Updated 1 week ago",
-    status: "Ready",
-    icon: RiFileTextLine,
-  },
-  {
-    name: "Receiving code review",
-    slug: "receiving-code-review",
-    description: "Technical rigor for evaluating and applying review feedback.",
-    source: "Built-in",
-    scope: "Global",
-    updated: "Updated 8 days ago",
-    status: "Review",
-    icon: RiTerminalLine,
-  },
-  {
-    name: "Writing plans",
-    slug: "writing-plans",
-    description: "Step-by-step implementation plans for multi-part changes.",
-    source: "Built-in",
-    scope: "Global",
-    updated: "Updated 9 days ago",
-    status: "Ready",
-    icon: RiFileTextLine,
-  },
-  {
-    name: "Subagent-driven development",
-    slug: "subagent-driven-development",
-    description: "A workflow for coordinating focused implementation tasks.",
-    source: "Built-in",
-    scope: "Global",
-    updated: "Updated 10 days ago",
-    status: "Syncing",
-    icon: RiStackLine,
-  },
-  {
-    name: "Dispatching parallel agents",
-    slug: "dispatching-parallel-agents",
-    description: "Patterns for delegating independent work safely and efficiently.",
-    source: "Built-in",
-    scope: "Global",
-    updated: "Updated 11 days ago",
-    status: "Ready",
-    icon: RiCommandLine,
-  },
-  {
-    name: "Using git worktrees",
-    slug: "using-git-worktrees",
-    description: "Isolated workspace practices for parallel feature development.",
-    source: "Built-in",
-    scope: "Global",
-    updated: "Updated 12 days ago",
-    status: "Ready",
-    icon: RiDatabase2Line,
-  },
-  {
-    name: "Finishing a development branch",
-    slug: "finishing-a-development-branch",
-    description: "Options for reviewing and integrating completed changes.",
-    source: "Built-in",
-    scope: "Global",
-    updated: "Updated 2 weeks ago",
-    status: "Ready",
-    icon: RiStackLine,
-  },
-  {
-    name: "React best practices",
-    slug: "vercel-react-best-practices",
-    description: "Performance guidance for React and Next.js applications.",
-    source: "Registry",
-    scope: "Global",
-    updated: "Updated 2 weeks ago",
-    status: "Ready",
-    icon: RiCommandLine,
-  },
-  {
-    name: "React composition patterns",
-    slug: "vercel-composition-patterns",
-    description: "Flexible component APIs that scale without prop proliferation.",
-    source: "Registry",
-    scope: "Global",
-    updated: "Updated 15 days ago",
-    status: "Review",
-    icon: RiStackLine,
-  },
-  {
-    name: "Tiptap integration",
-    slug: "tiptap",
-    description: "Patterns for extending and integrating the Tiptap editor.",
-    source: "Registry",
-    scope: "Global",
-    updated: "Updated 16 days ago",
-    status: "Ready",
-    icon: RiFileTextLine,
-  },
-  {
-    name: "Shadcn components",
-    slug: "shadcn",
-    description: "Guidance for adding, styling, and composing shadcn components.",
-    source: "Registry",
-    scope: "YssBI",
-    updated: "Updated 17 days ago",
-    status: "Syncing",
-    icon: RiCommandLine,
-  },
-  {
-    name: "Brainstorming",
-    slug: "brainstorming",
-    description: "Clarify intent, requirements, and design before implementation.",
-    source: "Built-in",
-    scope: "Global",
-    updated: "Updated 3 weeks ago",
-    status: "Ready",
-    icon: RiFileTextLine,
-  },
-  {
-    name: "Canvas design",
-    slug: "canvas-design",
-    description: "Design principles for creating original visual documents.",
-    source: "Registry",
-    scope: "Global",
-    updated: "Updated 3 weeks ago",
-    status: "Ready",
-    icon: RiDatabase2Line,
-  },
-  {
-    name: "Create skill",
-    slug: "create-skill",
-    description: "Build and package reusable agent instructions for Zed.",
-    source: "Built-in",
-    scope: "Global",
-    updated: "Updated 22 days ago",
-    status: "Review",
-    icon: RiStackLine,
-  },
-  {
-    name: "Find skills",
-    slug: "find-skills",
-    description: "Discover installable skills for common development tasks.",
-    source: "Built-in",
-    scope: "Global",
-    updated: "Updated 23 days ago",
-    status: "Ready",
-    icon: RiDatabase2Line,
-  },
-  {
-    name: "Ponytail",
-    slug: "ponytail",
-    description: "A pragmatic coding style focused on simple, direct solutions.",
-    source: "Built-in",
-    scope: "Global",
-    updated: "Updated 24 days ago",
-    status: "Ready",
-    icon: RiTerminalLine,
-  },
-  {
-    name: "Ponytail review",
-    slug: "ponytail-review",
-    description: "A review pass dedicated to finding unnecessary complexity.",
-    source: "Built-in",
-    scope: "Global",
-    updated: "Updated 25 days ago",
-    status: "Review",
-    icon: RiTerminalLine,
-  },
-  {
-    name: "Rust testing",
-    slug: "rust-testing",
-    description: "Testing patterns for Rust unit, integration, and async code.",
-    source: "Registry",
-    scope: "Global",
-    updated: "Updated 4 weeks ago",
-    status: "Ready",
-    icon: RiFileTextLine,
-  },
-  {
-    name: "Systematic debugging",
-    slug: "systematic-debugging-advanced",
-    description: "A structured workflow for diagnosing complex regressions.",
-    source: "Local",
-    scope: "YssBI",
-    updated: "Updated 29 days ago",
-    status: "Syncing",
-    icon: RiCommandLine,
-  },
-  {
-    name: "Accessibility review",
-    slug: "accessibility-review",
-    description: "Review interactive interfaces for keyboard and screen reader use.",
-    source: "Local",
-    scope: "YssBI",
-    updated: "Updated 1 month ago",
-    status: "Review",
-    icon: RiDatabase2Line,
-  },
-  {
-    name: "IPC boundary design",
-    slug: "ipc-boundary-design",
-    description: "Keep frontend, command, application, and domain contracts clear.",
-    source: "Local",
-    scope: "YssBI",
-    updated: "Updated 1 month ago",
-    status: "Ready",
-    icon: RiStackLine,
-  },
-  {
-    name: "Release checklist",
-    slug: "release-checklist",
-    description: "Final validation steps for a safe and repeatable release.",
-    source: "Local",
-    scope: "YssBI",
-    updated: "Updated 5 weeks ago",
-    status: "Ready",
-    icon: RiFileTextLine,
-  },
-  {
-    name: "Documentation maintenance",
-    slug: "documentation-maintenance",
-    description: "Keep architecture and development documentation current.",
-    source: "Local",
-    scope: "YssBI",
-    updated: "Updated 6 weeks ago",
-    status: "Review",
-    icon: RiDatabase2Line,
-  },
-];
-
-export const skillSets = [
-  {
-    name: "Reliable delivery",
-    slug: "reliable-delivery",
-    description: "A focused set for planning, implementing, and verifying changes.",
-    skills: ["Rust patterns", "Test-driven development"],
-    scope: "YssBI",
-    updated: "Updated today",
-    icon: RiStackLine,
-  },
-  {
-    name: "Debugging toolkit",
-    slug: "debugging-toolkit",
-    description: "A practical set for isolating failures and reviewing regressions.",
-    skills: ["Systematic debugging", "Frontend design"],
-    scope: "Global",
-    updated: "Updated yesterday",
-    icon: RiCommandLine,
-  },
-];
-
-type Skill = (typeof skills)[number];
-
-const skillSubtitleOverrides: Record<string, string> = {
-  brainstorming: "obra/superpowers",
-};
-
-function getSkillMarkdown(skill: Skill) {
-  return `## Overview
-
-${skill.description}
-
-## Details
-
-- **Source:** ${skill.source}
-- **Scope:** ${skill.scope}
-- **Status:** ${skill.status}
-- **Updated:** ${skill.updated}`;
+function formatSkillSource(source: SkillSourceDto) {
+  switch (source.kind) {
+    case "local":
+      return `Local · ${source.path.display}`;
+    case "registry":
+      return `Registry · ${source.registry}/${source.skill}${source.version ? ` @ ${source.version}` : ""}`;
+    case "git":
+      return `Git · ${source.url}${source.revision ? ` @ ${source.revision}` : ""}${
+        source.subdirectory ? ` · ${source.subdirectory.display}` : ""
+      }`;
+  }
 }
 
-function getSkillSubtitle(
-  slug: string,
-  skillSetItems: ReadonlyArray<{ slug: string; scope: string }> = skillSets,
-) {
-  const override = skillSubtitleOverrides[slug];
-  if (override) {
-    return override;
+function skillMatchesQuery(skill: CatalogSkillSummaryDto, normalizedQuery: string) {
+  if (!normalizedQuery) {
+    return true;
   }
 
-  const skill = skills.find((candidate) => candidate.slug === slug);
-  if (skill) {
-    return skill.source;
-  }
-
-  const skillSet = skillSetItems.find((candidate) => candidate.slug === slug);
-  return skillSet?.scope ?? "Skill set";
+  return [
+    skill.name,
+    skill.description,
+    skill.version ?? "",
+    formatSkillSource(skill.source),
+    skill.location.display,
+  ]
+    .join(" ")
+    .toLowerCase()
+    .includes(normalizedQuery);
 }
-
-type SkillListItem = {
-  slug: string;
-  name: string;
-  description: string;
-};
 
 function SkillList({
-  items,
-  selectedSlugs,
+  skills,
+  selectedSkillIds,
   onToggle,
-  onEdit,
   onView,
-  skillSetItems = skillSets,
-  showSubtitle = true,
 }: {
-  items: SkillListItem[];
-  selectedSlugs: ReadonlySet<string>;
-  onToggle: (slug: string, checked?: boolean) => void;
-  onEdit?: (slug: string) => void;
-  onView?: (slug: string) => void;
-  skillSetItems?: ReadonlyArray<{ slug: string; scope: string }>;
-  showSubtitle?: boolean;
+  skills: CatalogSkillSummaryDto[];
+  selectedSkillIds: ReadonlySet<string>;
+  onToggle: (skillId: string, checked?: boolean) => void;
+  onView: (skillId: string) => void;
 }) {
-  const keepCheckboxesVisible = selectedSlugs.size > 0;
-  const isViewMode = onView !== undefined;
-  const action = onView ?? onEdit;
-  const actionLabel = isViewMode ? "View" : "Edit";
-  const ActionIcon = isViewMode ? RiEyeLine : RiEditLine;
+  const keepCheckboxesVisible = selectedSkillIds.size > 0;
 
   return (
     <div role="list" className="flex min-w-0 flex-col gap-2 text-xs/relaxed">
-      {items.map((item) => {
-        const isSelected = selectedSlugs.has(item.slug);
+      {skills.map((skill) => {
+        const isSelected = selectedSkillIds.has(skill.id);
 
         return (
           <div
-            key={item.slug}
+            key={skill.id}
             role="button"
             tabIndex={0}
             aria-pressed={isSelected}
             className="group/skill-row mx-4 grid min-h-14 min-w-0 grid-cols-[1.5rem_minmax(0,1fr)_minmax(0,2fr)_2rem] items-center gap-3 border px-4 py-2 outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/50"
-            onClick={() => onToggle(item.slug)}
+            onClick={() => onToggle(skill.id)}
             onKeyDown={(event) => {
               if (event.target !== event.currentTarget) {
                 return;
@@ -444,44 +91,45 @@ function SkillList({
 
               if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();
-                onToggle(item.slug);
+                onToggle(skill.id);
               }
             }}
           >
             <div className="flex size-6 items-center justify-center">
               <Checkbox
-                aria-label={`Select ${item.name}`}
+                aria-label={`Select ${skill.name}`}
                 checked={isSelected}
                 className={cn(
                   "opacity-0 transition-opacity group-hover/skill-row:opacity-100 group-focus-within/skill-row:opacity-100",
                   keepCheckboxesVisible && "opacity-100",
                 )}
                 onClick={(event) => event.stopPropagation()}
-                onCheckedChange={(checked) => onToggle(item.slug, checked === true)}
+                onCheckedChange={(checked) => onToggle(skill.id, checked === true)}
               />
             </div>
             <div className="flex min-w-0 items-baseline gap-2">
-              <span className="min-w-0 truncate font-medium">{item.name}</span>
-              {showSubtitle ? (
-                <span className="max-w-32 shrink-0 truncate text-[0.65rem] text-muted-foreground">
-                  {getSkillSubtitle(item.slug, skillSetItems)}
-                </span>
-              ) : null}
+              <span className="min-w-0 truncate font-medium">{skill.name}</span>
+              <span
+                className="max-w-32 shrink-0 truncate text-[0.65rem] text-muted-foreground"
+                title={formatSkillSource(skill.source)}
+              >
+                {formatSkillSource(skill.source)}
+              </span>
             </div>
-            <div className="min-w-0 truncate text-muted-foreground">{item.description}</div>
+            <div className="min-w-0 truncate text-muted-foreground">{skill.description}</div>
             <Button
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label={`${actionLabel} ${item.name}`}
-              title={`${actionLabel} ${item.name}`}
+              aria-label={`View ${skill.name}`}
+              title={`View ${skill.name}`}
               className="justify-self-end"
               onClick={(event) => {
                 event.stopPropagation();
-                action?.(item.slug);
+                onView(skill.id);
               }}
             >
-              <ActionIcon aria-hidden="true" />
+              <RiEyeLine aria-hidden="true" />
             </Button>
           </div>
         );
@@ -491,28 +139,44 @@ function SkillList({
 }
 
 export function SkillsPage() {
+  const {
+    data,
+    skills,
+    error,
+    isLoading,
+    isRefreshing,
+    refresh,
+    detail,
+    detailError,
+    isDetailLoading,
+    loadDetail,
+    closeDetail,
+  } = useCatalogSkills();
   const [query, setQuery] = useState("");
-  const [selectedSlugs, setSelectedSlugs] = useState<Set<string>>(() => new Set());
-  const [skillSetItems, setSkillSetItems] = useState(skillSets);
+  const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(() => new Set());
   const [activeTab, setActiveTab] = useState<"item" | "set">("item");
-  const [isSelectingSkillFiles, setIsSelectingSkillFiles] = useState(false);
-  const [isAddSetOpen, setIsAddSetOpen] = useState(false);
-  const [editingSetSlug, setEditingSetSlug] = useState<string | null>(null);
-  const [newSetTitle, setNewSetTitle] = useState("skill set");
-  const [newSetDescription, setNewSetDescription] = useState("");
-  const [newSetSkillSlugs, setNewSetSkillSlugs] = useState<Set<string>>(() => new Set());
-  const [viewingSkill, setViewingSkill] = useState<Skill | null>(null);
+  const [viewingSkillId, setViewingSkillId] = useState<string | null>(null);
   const normalizedQuery = query.trim().toLowerCase();
 
-  const toggleSelection = (slug: string, checked?: boolean) => {
-    setSelectedSlugs((current) => {
+  const filteredSkills = useMemo(
+    () => skills.filter((skill) => skillMatchesQuery(skill, normalizedQuery)),
+    [normalizedQuery, skills],
+  );
+  const visibleSkillIds = filteredSkills.map((skill) => skill.id);
+  const allVisibleItemsSelected =
+    visibleSkillIds.length > 0 && visibleSkillIds.every((skillId) => selectedSkillIds.has(skillId));
+  const viewingSkill = skills.find((skill) => skill.id === viewingSkillId) ?? null;
+  const visibleDetail = detail?.skill.id === viewingSkillId ? detail : null;
+
+  const toggleSelection = (skillId: string, checked?: boolean) => {
+    setSelectedSkillIds((current) => {
       const next = new Set(current);
-      const shouldSelect = checked ?? !next.has(slug);
+      const shouldSelect = checked ?? !next.has(skillId);
 
       if (shouldSelect) {
-        next.add(slug);
+        next.add(skillId);
       } else {
-        next.delete(slug);
+        next.delete(skillId);
       }
 
       return next;
@@ -525,43 +189,15 @@ export function SkillsPage() {
     }
   };
 
-  const filteredSkills = useMemo(() => {
-    if (!normalizedQuery) {
-      return skills;
-    }
-
-    return skills.filter((skill) =>
-      `${skill.name} ${skill.description} ${skill.source} ${skill.scope}`
-        .toLowerCase()
-        .includes(normalizedQuery),
-    );
-  }, [normalizedQuery]);
-
-  const filteredSkillSets = useMemo(() => {
-    if (!normalizedQuery) {
-      return skillSetItems;
-    }
-
-    return skillSetItems.filter((skillSet) =>
-      `${skillSet.name} ${skillSet.description} ${skillSet.skills.join(" ")} ${skillSet.scope}`
-        .toLowerCase()
-        .includes(normalizedQuery),
-    );
-  }, [normalizedQuery, skillSetItems]);
-
-  const selectableSlugs = [...filteredSkills, ...filteredSkillSets].map((item) => item.slug);
-  const allVisibleItemsSelected =
-    selectableSlugs.length > 0 && selectableSlugs.every((slug) => selectedSlugs.has(slug));
-
   const toggleSelectAll = () => {
-    setSelectedSlugs((current) => {
+    setSelectedSkillIds((current) => {
       const next = new Set(current);
 
-      selectableSlugs.forEach((slug) => {
+      visibleSkillIds.forEach((skillId) => {
         if (allVisibleItemsSelected) {
-          next.delete(slug);
+          next.delete(skillId);
         } else {
-          next.add(slug);
+          next.add(skillId);
         }
       });
 
@@ -569,147 +205,21 @@ export function SkillsPage() {
     });
   };
 
-  const handleImportSkills = async () => {
-    setIsSelectingSkillFiles(true);
-
-    try {
-      const selectedFiles = await selectSkillFiles();
-
-      if (selectedFiles.length > 0) {
-        toast.info(
-          `${selectedFiles.length} skill file${selectedFiles.length === 1 ? "" : "s"} selected.`,
-        );
-      }
-    } catch {
-      toast.error("Unable to open the skill import dialog.");
-    } finally {
-      setIsSelectingSkillFiles(false);
-    }
+  const handleRefresh = () => {
+    void refresh();
   };
 
-  const handleExportSkills = async () => {
-    setIsSelectingSkillFiles(true);
-
-    try {
-      const exportPath = await selectSkillExportPath();
-
-      if (exportPath) {
-        toast.info("Export destination selected.");
-      }
-    } catch {
-      toast.error("Unable to open the skill export dialog.");
-    } finally {
-      setIsSelectingSkillFiles(false);
-    }
+  const handleView = (skillId: string) => {
+    setViewingSkillId(skillId);
+    void loadDetail(skillId);
   };
 
-  const openAddSetDialog = () => {
-    setEditingSetSlug(null);
-    setNewSetTitle("skill set");
-    setNewSetDescription("");
-    setNewSetSkillSlugs(new Set());
-    setIsAddSetOpen(true);
+  const handleCloseDetail = () => {
+    setViewingSkillId(null);
+    closeDetail();
   };
 
-  const openEditSetDialog = (slug: string) => {
-    const skillSet = skillSetItems.find((item) => item.slug === slug);
-    if (!skillSet) {
-      return;
-    }
-
-    setEditingSetSlug(slug);
-    setNewSetTitle(skillSet.name);
-    setNewSetDescription(skillSet.description);
-    setNewSetSkillSlugs(
-      new Set(
-        skills
-          .filter((skill) => skillSet.skills.includes(skill.name))
-          .map((skill) => skill.slug),
-      ),
-    );
-    setIsAddSetOpen(true);
-  };
-
-  const openSkillView = (slug: string) => {
-    const skill = skills.find((item) => item.slug === slug);
-    if (skill) {
-      setViewingSkill(skill);
-    }
-  };
-
-  const toggleNewSetSkill = (slug: string, checked: boolean) => {
-    setNewSetSkillSlugs((current) => {
-      const next = new Set(current);
-
-      if (checked) {
-        next.add(slug);
-      } else {
-        next.delete(slug);
-      }
-
-      return next;
-    });
-  };
-
-  const handleAddSet = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
-    const title = newSetTitle.trim();
-    if (!title) {
-      toast.error("Enter a title for the skill set.");
-      return;
-    }
-
-    if (newSetSkillSlugs.size === 0) {
-      toast.error("Select at least one skill item.");
-      return;
-    }
-
-    const description = newSetDescription.trim();
-    const selectedSkillNames = skills
-      .filter((skill) => newSetSkillSlugs.has(skill.slug))
-      .map((skill) => skill.name);
-
-    if (editingSetSlug) {
-      setSkillSetItems((current) =>
-        current.map((skillSet) =>
-          skillSet.slug === editingSetSlug
-            ? {
-                ...skillSet,
-                name: title,
-                description,
-                skills: selectedSkillNames,
-                updated: "Updated just now",
-              }
-            : skillSet,
-        ),
-      );
-      setIsAddSetOpen(false);
-      toast.success("Skill set updated.");
-      return;
-    }
-
-    const slugBase =
-      title
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "") || "skill-set";
-
-    setSkillSetItems((current) => [
-      ...current,
-      {
-        name: title,
-        slug: `${slugBase}-${Date.now()}`,
-        description,
-        skills: selectedSkillNames,
-        scope: "Local",
-        updated: "Updated just now",
-        icon: RiStackLine,
-      },
-    ]);
-    setIsAddSetOpen(false);
-    toast.success("Skill set added.");
-  };
+  const isSelectionUnavailable = activeTab === "set" || visibleSkillIds.length === 0;
 
   return (
     <>
@@ -722,6 +232,9 @@ export function SkillsPage() {
               variant="outline"
               size="sm"
               aria-pressed={allVisibleItemsSelected}
+              aria-label={activeTab === "set" ? "Select all unavailable for skill sets" : undefined}
+              title={activeTab === "set" ? "Skill set selection is unavailable" : undefined}
+              disabled={isSelectionUnavailable}
               onClick={toggleSelectAll}
             >
               <RiCheckboxMultipleLine aria-hidden="true" data-icon="inline-start" />
@@ -731,7 +244,9 @@ export function SkillsPage() {
               type="button"
               variant="outline"
               size="sm"
-              disabled={selectedSlugs.size === 0}
+              aria-label="Update unavailable"
+              title="Skill updates are unavailable"
+              disabled
             >
               <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
               Update
@@ -740,7 +255,9 @@ export function SkillsPage() {
               type="button"
               variant="destructive"
               size="sm"
-              disabled={selectedSlugs.size === 0}
+              aria-label="Delete unavailable"
+              title="Skill deletion is unavailable"
+              disabled
             >
               <RiDeleteBinLine aria-hidden="true" data-icon="inline-start" />
               Delete
@@ -752,8 +269,9 @@ export function SkillsPage() {
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => void handleImportSkills()}
-                disabled={isSelectingSkillFiles}
+                aria-label="Import unavailable"
+                title="Skill import is unavailable"
+                disabled
               >
                 <RiDownloadLine aria-hidden="true" data-icon="inline-start" />
                 Import
@@ -762,8 +280,9 @@ export function SkillsPage() {
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => void handleExportSkills()}
-                disabled={isSelectingSkillFiles}
+                aria-label="Export unavailable"
+                title="Skill export is unavailable"
+                disabled
               >
                 <RiUploadLine aria-hidden="true" data-icon="inline-start" />
                 Export
@@ -774,20 +293,32 @@ export function SkillsPage() {
               type="button"
               variant="outline"
               size="sm"
-              onClick={openAddSetDialog}
+              aria-label="Add unavailable"
+              title="Adding skill sets is unavailable"
+              disabled
             >
               <RiAddLine aria-hidden="true" data-icon="inline-start" />
               Add
             </Button>
           )}
-          <Button type="button" variant="outline" size="sm">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-busy={isRefreshing}
+            disabled={isLoading || isRefreshing}
+            onClick={handleRefresh}
+          >
             <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
             Refresh
           </Button>
         </div>
       </header>
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border bg-background">
+      <div
+        className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border bg-background"
+        aria-busy={isLoading || isRefreshing}
+      >
         <Tabs
           value={activeTab}
           onValueChange={handleTabChange}
@@ -808,23 +339,72 @@ export function SkillsPage() {
               />
             </div>
             <TabsList className="shrink-0">
-              <TabsTrigger value="item">
-                Item
-              </TabsTrigger>
-              <TabsTrigger value="set">
+              <TabsTrigger value="item">Item</TabsTrigger>
+              <TabsTrigger value="set" title="Skill sets are unavailable">
                 Set
               </TabsTrigger>
             </TabsList>
           </div>
 
           <TabsContent value="item" className="flex min-h-0 min-w-0 flex-1 flex-col">
-            {filteredSkills.length > 0 ? (
+            {error && data ? (
+              <div
+                role="alert"
+                className="mx-4 mb-4 flex flex-wrap items-center justify-between gap-3 border px-4 py-3"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">Unable to refresh the catalog</p>
+                  <p className="text-sm text-muted-foreground">
+                    {error.message} <span className="font-mono text-xs">({error.code})</span>
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isRefreshing}
+                  onClick={handleRefresh}
+                >
+                  <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
+                  Retry
+                </Button>
+              </div>
+            ) : null}
+
+            {isLoading && !data ? (
+              <div className="px-4 py-10 text-center" role="status" aria-live="polite">
+                <p className="text-sm font-medium">Loading catalog skills…</p>
+              </div>
+            ) : error && !data ? (
+              <div className="px-4 py-10 text-center" role="alert">
+                <p className="text-sm font-medium">Unable to load catalog skills</p>
+                <p className="mt-1 text-sm text-muted-foreground">{error.message}</p>
+                <p className="mt-1 font-mono text-xs text-muted-foreground">{error.code}</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="mt-4"
+                  onClick={handleRefresh}
+                >
+                  <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
+                  Retry
+                </Button>
+              </div>
+            ) : skills.length === 0 ? (
+              <div className="px-4 py-10 text-center" aria-live="polite">
+                <p className="text-sm font-medium">No catalog skills</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  The catalog does not contain any skills.
+                </p>
+              </div>
+            ) : filteredSkills.length > 0 ? (
               <ScrollArea className="min-h-0 min-w-0 flex-1">
                 <SkillList
-                  items={filteredSkills}
-                  selectedSlugs={selectedSlugs}
+                  skills={filteredSkills}
+                  selectedSkillIds={selectedSkillIds}
                   onToggle={toggleSelection}
-                  onView={openSkillView}
+                  onView={handleView}
                 />
               </ScrollArea>
             ) : (
@@ -836,46 +416,76 @@ export function SkillsPage() {
           </TabsContent>
 
           <TabsContent value="set" className="flex min-h-0 min-w-0 flex-1 flex-col">
-            {filteredSkillSets.length > 0 ? (
-              <ScrollArea className="min-h-0 min-w-0 flex-1">
-                <SkillList
-                  items={filteredSkillSets}
-                  selectedSlugs={selectedSlugs}
-                  onToggle={toggleSelection}
-                  onEdit={openEditSetDialog}
-                  skillSetItems={skillSetItems}
-                  showSubtitle={false}
-                />
-              </ScrollArea>
-            ) : (
-              <div className="px-4 py-10 text-center" aria-live="polite">
-                <p className="text-sm font-medium">No matching results</p>
-                <p className="mt-1 text-sm text-muted-foreground">Try a different search term.</p>
-              </div>
-            )}
+            <div className="px-4 py-10 text-center" aria-live="polite">
+              <p className="text-sm font-medium">Skill sets unavailable</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Skill set actions are not available yet.
+              </p>
+            </div>
           </TabsContent>
         </Tabs>
       </div>
 
       <Dialog
-        open={viewingSkill !== null}
+        open={viewingSkillId !== null}
         onOpenChange={(open) => {
           if (!open) {
-            setViewingSkill(null);
+            handleCloseDetail();
           }
         }}
       >
         <DialogContent className="flex h-[min(80vh,720px)] max-w-2xl flex-col overflow-hidden">
-          {viewingSkill ? (
+          {viewingSkillId ? (
             <>
               <DialogHeader>
-                <DialogTitle>{viewingSkill.name}</DialogTitle>
+                <DialogTitle>
+                  {visibleDetail?.skill.name ?? viewingSkill?.name ?? "Skill details"}
+                </DialogTitle>
               </DialogHeader>
-              <ScrollArea className="min-h-0 flex-1">
-                <div className="pr-4 text-sm/relaxed [&_h2]:mb-2 [&_h2]:font-heading [&_h2]:text-sm [&_h2]:font-medium [&_li]:text-muted-foreground [&_p]:text-muted-foreground [&_strong]:font-medium [&_ul]:list-disc [&_ul]:space-y-1 [&_ul]:pl-5">
-                  <ReactMarkdown>{getSkillMarkdown(viewingSkill)}</ReactMarkdown>
+              {isDetailLoading ? (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="flex min-h-0 flex-1 items-center justify-center py-10 text-center"
+                >
+                  <p className="text-sm text-muted-foreground">Loading skill details…</p>
                 </div>
-              </ScrollArea>
+              ) : detailError ? (
+                <div
+                  role="alert"
+                  className="flex min-h-0 flex-1 flex-col items-center justify-center py-10 text-center"
+                >
+                  <p className="text-sm font-medium">Unable to load skill details</p>
+                  <p className="mt-1 max-w-xl text-sm text-muted-foreground">
+                    {detailError.message}
+                  </p>
+                  <p className="mt-1 font-mono text-xs text-muted-foreground">{detailError.code}</p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-4"
+                    onClick={() => void loadDetail(viewingSkillId)}
+                  >
+                    <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
+                    Retry
+                  </Button>
+                </div>
+              ) : visibleDetail ? (
+                <ScrollArea className="min-h-0 flex-1">
+                  <div className="pr-4 text-sm/relaxed [&_h2]:mb-2 [&_h2]:font-heading [&_h2]:text-sm [&_h2]:font-medium [&_li]:text-muted-foreground [&_p]:text-muted-foreground [&_strong]:font-medium [&_ul]:list-disc [&_ul]:space-y-1 [&_ul]:pl-5">
+                    <ReactMarkdown>{visibleDetail.body}</ReactMarkdown>
+                  </div>
+                </ScrollArea>
+              ) : (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="flex min-h-0 flex-1 items-center justify-center py-10 text-center"
+                >
+                  <p className="text-sm text-muted-foreground">Skill details are unavailable.</p>
+                </div>
+              )}
               <DialogFooter>
                 <DialogClose asChild>
                   <Button type="button">Close</Button>
@@ -883,77 +493,6 @@ export function SkillsPage() {
               </DialogFooter>
             </>
           ) : null}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={isAddSetOpen} onOpenChange={setIsAddSetOpen}>
-        <DialogContent className="flex h-[min(80vh,720px)] max-w-2xl flex-col overflow-hidden">
-          <DialogHeader>
-            <DialogTitle>{editingSetSlug ? "Edit skill set" : "Add skill set"}</DialogTitle>
-          </DialogHeader>
-          <form className="flex min-h-0 flex-1 flex-col gap-4" onSubmit={handleAddSet}>
-            <div className="flex items-start justify-between gap-4">
-              <label className="flex min-w-0 flex-1 flex-col gap-1.5" htmlFor="skill-set-title">
-                <span className="font-medium">Title</span>
-                <Input
-                  id="skill-set-title"
-                  value={newSetTitle}
-                  onChange={(event) => setNewSetTitle(event.currentTarget.value)}
-                  placeholder="Skill set title"
-                  required
-                />
-              </label>
-
-              <label
-                className="flex min-w-0 flex-1 flex-col gap-1.5"
-                htmlFor="skill-set-description"
-              >
-                <span className="font-medium">Description</span>
-                <Input
-                  id="skill-set-description"
-                  value={newSetDescription}
-                  onChange={(event) => setNewSetDescription(event.currentTarget.value)}
-                  placeholder="Describe what this set is for"
-                />
-              </label>
-            </div>
-
-            <fieldset className="flex min-h-0 flex-1 flex-col">
-              <legend className="m-0 mb-1.5 p-0 font-medium">Skill items</legend>
-              <ScrollArea className="min-h-0 flex-1 border border-input">
-                <div className="flex flex-col p-1">
-                  {skills.map((skill) => (
-                    <label
-                      key={skill.slug}
-                      className="flex min-w-0 cursor-pointer items-center gap-2 px-2 py-1.5 hover:bg-muted"
-                    >
-                      <Checkbox
-                        aria-label={`Include ${skill.name}`}
-                        checked={newSetSkillSlugs.has(skill.slug)}
-                        onCheckedChange={(checked) =>
-                          toggleNewSetSkill(skill.slug, checked === true)
-                        }
-                      />
-                      <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
-                        <span className="min-w-0 flex-1 truncate text-xs font-medium">{skill.name}</span>
-                        <span className="shrink-0 truncate text-[0.65rem] text-muted-foreground">
-                          {getSkillSubtitle(skill.slug)}
-                        </span>
-                      </div>
-                    </label>
-                  ))}
-                </div>
-              </ScrollArea>
-            </fieldset>
-            <DialogFooter>
-              <DialogClose asChild>
-                <Button type="button" variant="outline">
-                  Cancel
-                </Button>
-              </DialogClose>
-              <Button type="submit">{editingSetSlug ? "Save changes" : "Add set"}</Button>
-            </DialogFooter>
-          </form>
         </DialogContent>
       </Dialog>
     </>
