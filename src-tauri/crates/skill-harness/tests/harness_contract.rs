@@ -68,6 +68,32 @@ fn resolves_home_relative_paths_and_detection_without_scanning_skills() {
 }
 
 #[test]
+fn built_in_paths_render_with_platform_native_separators() {
+    let temp = tempdir().expect("temporary directory");
+    let home = temp.path().join("home");
+    let environment = HarnessEnvironment::new(home.clone(), None);
+    let harnesses = default_harnesses();
+    let adapter = harness(&harnesses, "adal");
+
+    let locations = adapter
+        .resolve_locations(&environment, Some(temp.path()))
+        .expect("adal locations");
+
+    assert_eq!(
+        locations.global_skills_dir.to_string_lossy(),
+        home.join(".adal").join("skills").to_string_lossy()
+    );
+    assert_eq!(
+        locations
+            .project_skills_dir
+            .as_deref()
+            .expect("adal project skills directory")
+            .to_string_lossy(),
+        temp.path().join(".adal").join("skills").to_string_lossy()
+    );
+}
+
+#[test]
 fn config_based_harnesses_prefer_existing_platform_config_directory() {
     let temp = tempdir().expect("temporary directory");
     let home = temp.path().join("home");

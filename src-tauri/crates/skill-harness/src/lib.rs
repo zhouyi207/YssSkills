@@ -169,6 +169,15 @@ pub enum HarnessError {
     DuplicateId { id: HarnessId },
 }
 
+fn portable_relative_path(raw: &str) -> PathBuf {
+    // Built-in and serialized relative paths use `/`, but PathBuf preserves those
+    // existing separators when rendered on Windows unless each component is pushed.
+    raw.split('/').fold(PathBuf::new(), |mut path, component| {
+        path.push(component);
+        path
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PathRule {
     HomeRelative {
@@ -181,11 +190,11 @@ enum PathRule {
 impl PathRule {
     fn home_relative(raw: &str) -> Self {
         Self::HomeRelative {
-            path: PathBuf::from(raw),
+            path: portable_relative_path(raw),
             config_relative: raw
                 .strip_prefix(".config/")
                 .filter(|suffix| !suffix.is_empty())
-                .map(PathBuf::from),
+                .map(portable_relative_path),
         }
     }
 
@@ -205,7 +214,7 @@ impl PathRule {
                 });
             }
             return Ok(Self::HomeRelative {
-                path: PathBuf::from(rest),
+                path: portable_relative_path(rest),
                 config_relative: None,
             });
         }
@@ -348,7 +357,7 @@ impl HarnessAdapter {
             category: spec.category,
             global_skills_path: PathRule::home_relative(spec.global),
             detection_path: Some(PathRule::home_relative(spec.detect)),
-            project_skills_path: Some(PathBuf::from(project_path)),
+            project_skills_path: Some(portable_relative_path(project_path)),
             additional_global_discovery_paths: spec
                 .additional
                 .iter()
@@ -491,7 +500,7 @@ fn normalize_project_path(raw: Option<&str>) -> Result<Option<PathBuf>, HarnessE
             path: raw.to_owned(),
         });
     }
-    Ok(Some(PathBuf::from(normalized)))
+    Ok(Some(portable_relative_path(normalized)))
 }
 
 #[derive(Debug, Clone, Copy)]
