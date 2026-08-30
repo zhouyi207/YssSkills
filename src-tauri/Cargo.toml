@@ -3,6 +3,10 @@ resolver = "2"
 members = [
     ".",
     "crates/skill-core",
+    "crates/skill-harness",
+    "crates/skill-local",
+    "crates/skill-registry",
+    "crates/skill-workspace",
 ]
 
 [package]
