@@ -22,7 +22,7 @@
 
     /* Path Mapping, shadcn ui */
     "paths": {
-      "@/*": ["./src/*"],
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src"],

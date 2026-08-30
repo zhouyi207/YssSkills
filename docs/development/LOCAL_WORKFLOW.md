@@ -12,17 +12,17 @@
 
 ## 命令分组
 
-| 目的 | 聚合命令 | 单栈命令 |
-| --- | --- | --- |
-| 安装或同步依赖 | `pnpm install` | — |
-| 启动 Tauri 桌面应用 | `pnpm dev` | — |
-| 构建桌面安装包 | `pnpm build` | — |
-| 类型与编译检查 | `pnpm check` | `pnpm check:ts`、`pnpm check:rs` |
-| 静态检查 | `pnpm lint` | `pnpm lint:ts`、`pnpm lint:rs` |
-| 测试 | `pnpm test` | `pnpm test:ts`、`pnpm test:rs` |
-| 写入格式化 | `pnpm format` | `pnpm format:ts`、`pnpm format:rs` |
-| 只读格式检查 | `pnpm format:check` | `pnpm format:check:ts`、`pnpm format:check:rs` |
-| 完整交付门禁 | `pnpm run ci` | — |
+| 目的                | 聚合命令            | 单栈命令                                       |
+| ------------------- | ------------------- | ---------------------------------------------- |
+| 安装或同步依赖      | `pnpm install`      | —                                              |
+| 启动 Tauri 桌面应用 | `pnpm dev`          | —                                              |
+| 构建桌面安装包      | `pnpm build`        | —                                              |
+| 类型与编译检查      | `pnpm check`        | `pnpm check:ts`、`pnpm check:rs`               |
+| 静态检查            | `pnpm lint`         | `pnpm lint:ts`、`pnpm lint:rs`                 |
+| 测试                | `pnpm test`         | `pnpm test:ts`、`pnpm test:rs`                 |
+| 写入格式化          | `pnpm format`       | `pnpm format:ts`、`pnpm format:rs`             |
+| 只读格式检查        | `pnpm format:check` | `pnpm format:check:ts`、`pnpm format:check:rs` |
+| 完整交付门禁        | `pnpm run ci`       | —                                              |
 
 `dev` 和 `build` 只表示完整 Tauri 应用入口。`src-tauri/tauri.conf.json` 的
 `beforeDevCommand` 和 `beforeBuildCommand` 直接调用 Vite，不能回调这两个

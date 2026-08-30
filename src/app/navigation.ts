@@ -28,7 +28,7 @@ export const appNavigation = [
     title: "Registry",
     href: "/registry",
     icon: RiBarChartLine,
-  }
+  },
 ] as const;
 
 export const appSecondaryNavigation = [
