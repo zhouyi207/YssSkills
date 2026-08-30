@@ -1,0 +1,22 @@
+[package]
+name = "skill-local"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+notify = "8.2"
+notify-debouncer-full = "0.7"
+sha2 = "0.10"
+skill-core = { path = "../skill-core" }
+thiserror = "2"
+walkdir = "2.5"
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+junction = "2.0"
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
