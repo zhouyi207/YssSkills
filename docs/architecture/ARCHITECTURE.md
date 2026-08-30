@@ -30,7 +30,9 @@ YssSkills 是一个通过 Tauri 提供桌面界面的 Skill 管理器。它需�
   reference 解析及 typed errors；
 - `skill-workspace` 已提供 Agents/Project/Linked Workspace 模型、目标解析、只读
   `observe`、中央库收敛式 `reconcile` 以及相应的公开端口；
-- 真实 Tauri 业务命令仍未接入，Tauri 入口仍是模板命令，前端仍是模板页面；
+- 当前前端已接入 shadcn dashboard 外壳和 hash 路由，提供 Dashboard、Skills、
+  Workspaces、Registry、Settings 五个静态演示页面；
+- 真实 Tauri 业务命令仍未接入，Tauri 入口仍是模板命令；
 - 本文后续章节以代码中的当前实现为准，并明确仍待接入的应用层边界。
 
 后续仍应按稳定契约接入 registry 的应用用例和真实 Tauri 业务链路。不要为了匹配
@@ -549,6 +551,13 @@ IPC DTO
 直接 `invoke`。前端 store 只保存 UI 状态、缓存或用于展示的 projection，
 不复制 Rust 侧的 Skill、磁盘或部署权威状态。路由状态由路由管理，临时交互
 状态留在内存，跨会话偏好才进入适当的持久化层。
+
+当前前端入口由 `src/app/main.tsx` 加载 `src/app/App.tsx`，由
+`src/app/routes.tsx` 创建 `createHashRouter`。共享的 `AppLayout` 提供
+shadcn `SidebarProvider`、`SidebarInset`、顶部标题和路由出口；页面位于
+`src/app/pages/`。Hash 路由适用于 Tauri 的静态资源加载，不要求桌面应用为
+每个深层路径提供额外的服务器 fallback。当前页面使用静态演示数据；接入真实
+Skill 用例后，应通过 frontend service 和 typed IPC DTO 替换这些数据。
 
 当前模板中的 `greet` 命令和直接 `invoke` 仅属于初始骨架。引入真实 Skill
 用例时，应按上述边界迁移，不把模板调用模式扩展成业务模式。
