@@ -4,10 +4,9 @@
 4. skill-local：复制、链接、junction、删除和 watcher
 5. skill-workspace：Global / Project / Linked 部署状态
 6. skill-registry：skills.sh、GitHub 等远程来源
-7. SQLite 或其他持久化 adapter
-8. Tauri commands、IPC DTO 和前端 service
+7. [x] SQLite 持久化 adapter
+8. [x] Tauri commands、IPC DTO 和前端 service
 
 C:\Users\Administrator\Downloads\skills-manager-main\skills-manager-main\
-
 
 ## 2026.08.29

@@ -14,38 +14,40 @@ YssSkills 是一个通过 Tauri 提供桌面界面的 Skill 管理器。它需�
 - 远程 Skill registry 的查询和来源解析；
 - Skill 在 Agents、Project 和 Linked 工作区中的部署与同步。
 
-当前仓库已落地本地能力纵切片、`skill-workspace` 的 Workspace 模型/目标解析/观察/收敛实现，以及独立的 `skill-registry` 远程查询与来源解析能力；真实 Tauri 应用接口链路仍处于骨架阶段：
+当前仓库已经形成从 React 页面到本地文件系统、SQLite 和远程 registry 查询的真实
+纵切片：
 
-- `src-tauri/Cargo.toml` 已声明 Cargo workspace，当前包含根 `yssskills` Tauri
-  package、`crates/skill-core`、`crates/skill-harness`、`crates/skill-local`、
+- `src-tauri/Cargo.toml` 声明 Cargo workspace，包含根 `yssskills` Tauri package、
+  `crates/skill-core`、`crates/skill-harness`、`crates/skill-local`、
   `crates/skill-registry` 和 `crates/skill-workspace`；
-- `skill-core` 已提供纯领域类型、`SKILL.md` frontmatter 解析、marker 规则、
-  名称安全规范化和 focused tests；
-- `skill-harness` 已提供内置 Harness、检测与路径解析、能力声明以及自定义
-  adapter；
-- `skill-local` 已提供只读扫描/读取/hash、复制、符号链接、junction、删除以及
-  按显式目标工作的有限 watcher；
-- `skill-registry` 已提供 skills.sh search/leaderboard 的 blocking client、
-  Next/RSC/JSON 结构化解析、显式 source kind 保留、GitHub/普通 Git source
-  reference 解析及 typed errors；
-- `skill-workspace` 已提供 Agents/Project/Linked Workspace 模型、目标解析、只读
-  `observe`、中央库收敛式 `reconcile` 以及相应的公开端口；
-- 当前前端已接入 shadcn dashboard 外壳和 hash 路由，提供 Dashboard、Skills、
-  Workspaces、Registry、Settings 五个静态演示页面；
-- 真实 Tauri 业务命令仍未接入，Tauri 入口仍是模板命令；
-- 本文后续章节以代码中的当前实现为准，并明确仍待接入的应用层边界。
+- `skill-core` 提供纯领域类型、`SKILL.md` frontmatter 解析、marker 规则、名称安全
+  规范化和 focused tests；
+- `skill-harness` 提供内置 Harness、检测与路径解析、能力声明以及自定义 adapter；
+- `skill-local` 提供只读扫描/读取/hash、复制、符号链接、junction、删除以及按显式
+  目标工作的有限 watcher；
+- `skill-registry` 提供 skills.sh search/leaderboard 的 blocking client、Next/RSC/JSON
+  结构化解析、显式 source kind 保留、GitHub/普通 Git source reference 解析及 typed
+  errors；
+- `skill-workspace` 提供 Agents/Project/Linked Workspace 模型、目标解析、只读
+  `observe`、中央库收敛式 `reconcile` 以及相应公开端口；
+- 根 `yssskills` package 提供 SQLite 中央 catalog/Workspace adapter、专用 application
+  worker、显式 IPC DTO、结构化错误映射和 Tauri commands；
+- 前端 Dashboard、Skills、Workspaces、Registry、Settings 页面通过 application hooks 和
+  typed services 调用真实 commands，所有业务 `invoke` 集中在 IPC client；
+- registry install/materialization、Workspace watcher 自动调度、周期性 reconcile、自定义
+  Harness 持久化以及 Workspace 编辑/删除仍未实现，界面不得伪造这些能力。
 
-后续仍应按稳定契约接入 registry 的应用用例和真实 Tauri 业务链路。不要为了匹配
-目录图而一次性生成没有真实责任的空抽象。
+本文后续章节以代码中的当前实现为准。新增能力应进入已有责任边界，不要为了匹配目录图
+一次性生成没有真实责任的空抽象。
 
 ## 2. 术语区分
 
 本文中有三个容易混淆的词：
 
-| 术语 | 含义 |
-| --- | --- |
-| **Cargo workspace** | Rust 工程级概念。把 Tauri 外壳和多个业务 crate 放在同一个依赖、锁文件和构建工作区中。 |
-| **`skill-workspace`** | 负责 Skill 部署目标、同步关系和收敛编排的业务 crate。 |
+| 术语                                    | 含义                                                                                          |
+| --------------------------------------- | --------------------------------------------------------------------------------------------- |
+| **Cargo workspace**                     | Rust 工程级概念。把 Tauri 外壳和多个业务 crate 放在同一个依赖、锁文件和构建工作区中。         |
+| **`skill-workspace`**                   | 负责 Skill 部署目标、同步关系和收敛编排的业务 crate。                                         |
 | **Agents / Project / Linked Workspace** | 产品领域概念。分别表示用户级 Agent Skills、项目 Skills 和外部关联 Skills 被部署或链接到哪里。 |
 
 Cargo workspace 不拥有产品上的 Workspace 状态；`skill-workspace` 也不等同于
@@ -60,13 +62,16 @@ Cargo workspace。
 flowchart TD
     UI[React UI] --> FrontendService[Frontend service / hooks]
     FrontendService --> IPC[Tauri IPC commands and events]
-    IPC --> App[yssskills Tauri application]
-    App --> Workspace[skill-workspace]
+    IPC --> AppWorker[yssskills application worker]
+    AppWorker --> Workspace[skill-workspace]
+    AppWorker --> Registry[skill-registry]
+    AppWorker --> Persistence[SQLite catalog adapter]
 
     Workspace --> Core[skill-core]
     Workspace --> Harness[skill-harness]
     Workspace --> Local[skill-local]
-    App -. future remote source seam .-> Registry[skill-registry]
+    Workspace --> Persistence
+    Persistence --> Local
 
     Harness --> Core
     Local --> Core
@@ -86,14 +91,14 @@ flowchart TD
 
 目标 crate 名称如下。包名使用连字符，Rust 代码中的库名会自然转换为下划线：
 
-| Cargo package | Rust library | 责任 |
-| --- | --- | --- |
-| `yssskills` | `yssskills_lib` | Tauri 启动、命令、事件和 IPC DTO；保留现有外壳名称。 |
-| `skill-core` | `skill_core` | Skill 领域模型、解析结果和纯领域规则。 |
-| `skill-harness` | `skill_harness` | Harness 描述、检测、路径和能力适配。 |
-| `skill-local` | `skill_local` | 本机文件系统上的扫描、安装、监听和变化检测。 |
-| `skill-registry` | `skill_registry` | 远程 registry 的搜索/leaderboard 响应解析、source reference 和来源分类解析。 |
-| `skill-workspace` | `skill_workspace` | Agents/Project/Linked Workspace 及部署同步编排。 |
+| Cargo package     | Rust library      | 责任                                                                                    |
+| ----------------- | ----------------- | --------------------------------------------------------------------------------------- |
+| `yssskills`       | `yssskills_lib`   | Tauri 启动、application worker、SQLite adapter、commands 和 IPC DTO；保留现有外壳名称。 |
+| `skill-core`      | `skill_core`      | Skill 领域模型、解析结果和纯领域规则。                                                  |
+| `skill-harness`   | `skill_harness`   | Harness 描述、检测、路径和能力适配。                                                    |
+| `skill-local`     | `skill_local`     | 本机文件系统上的扫描、安装、监听和变化检测。                                            |
+| `skill-registry`  | `skill_registry`  | 远程 registry 的搜索/leaderboard 响应解析、source reference 和来源分类解析。            |
+| `skill-workspace` | `skill_workspace` | Agents/Project/Linked Workspace 及部署同步编排。                                        |
 
 `skill-harness` 比单独使用 `harness` 更能表达它管理的是 Agent Skill Harness；
 `skill-workspace` 则避免与 Cargo workspace 概念混淆。当前 workspace member 以第
@@ -115,9 +120,9 @@ members = [
 ]
 ```
 
-根 package `yssskills` 仍然是 Tauri 应用，负责把 IPC 请求交给
-`skill-workspace`。各业务 crate 使用自己的 `Cargo.toml` 和最小依赖集合，
-共享根目录下的 `Cargo.lock` 与构建产物。
+根 package `yssskills` 仍然是 Tauri 应用，负责把 IPC 请求交给 application worker，
+再由应用层调用 `skill-workspace`、SQLite adapter 或 `skill-registry`。各业务 crate 使用
+自己的 `Cargo.toml` 和最小依赖集合，共享根目录下的 `Cargo.lock` 与构建产物。
 
 ## 4. 模块职责与接口
 
@@ -320,9 +325,11 @@ adapter，接入 skills.sh 的查询和 Git/GitHub source reference 解析；它
   不暴露 URL、token、proxy credential 或完整底层错误文本。
 
 当前没有公开或调用官方 `/api/v1` detail endpoint：仓库未确认稳定的 detail
-协议，因此没有伪造 detail、版本或未认证成功结果。若将来接入该 endpoint，bearer
-认证和 HTTP 401 必须在此边界保留为 `AuthenticationRequired`，响应必须解析为明确的
-结构化 detail，而不能降级为空结果。
+协议，因此没有伪造 detail、版本或未认证成功结果。search 和 leaderboard 已由根应用
+通过 `spawn_blocking` 接入 Tauri commands 和前端 service；详情按钮只打开 registry
+返回的受信 URL。若将来接入 detail endpoint，bearer 认证和 HTTP 401 必须在此边界
+保留为 `AuthenticationRequired`，响应必须解析为明确的结构化 detail，而不能降级为空
+结果。
 
 它不负责：
 
@@ -333,10 +340,10 @@ adapter，接入 skills.sh 的查询和 Git/GitHub source reference 解析；它
 
 远程响应是不可信输入。client/parser 必须验证响应结构、对 `error/errors` 的非法或非空
 sentinel fail closed、限制资源规模、使用合理超时，并避免把 proxy 凭据、token、完整请求体
-或 Skill 内容写入日志。blocking client 不在 crate 内启动 runtime；如果调用方处于 async
-runtime，应在调用方使用 `spawn_blocking` 或等价的专用 worker。detail endpoint、应用层
-wiring 和 Tauri command 仍未实现；远程内容需要物化时，应用层先消费 source reference，
-再把受控 staging 输入交给 `skill-local`；registry 本身不拥有本地事实。
+或 Skill 内容写入日志。blocking client 不在 crate 内启动 runtime；根 Tauri command 在
+`spawn_blocking` 中执行网络请求。detail endpoint 和远程内容 materialization/install 仍未
+实现；需要物化时，应用层先消费 source reference，再把受控 staging 输入交给
+`skill-local`，registry 本身不拥有本地事实。
 
 ### 4.5 `skill-workspace`：部署与同步编排
 
@@ -385,11 +392,40 @@ marker 修改时间都可用、同时本地 marker 明确晚于中央 marker 时
 库时，先按 marker 修改时间最新者选择写回候选；时间相同时按规范化路径的字典序确定性
 选择。收敛完成后必须重新扫描并计算状态，不定义 `Conflict` 状态。
 
-中央库发生更新后，应用层必须枚举所有已注册 Workspace，逐个调用各自的 `reconcile`，
-而不是只更新触发本次变化的 Workspace，确保所有对应本地副本都得到中央库版本。跨
-Workspace 的候选汇总和串行顺序由应用层负责，当前尚未实现；`WorkspaceEngine` 每次只
-处理传入的单个 Workspace。watcher 触发 reconcile、周期性 reconcile 以及上述全量遍历
-都是应用层接入后的必需流程；当前 Tauri 应用尚未接入这些应用层调度流程。
+显式 reconcile 可能导入、更新、恢复缺失目标或传播中央版本时，根应用层先只读观察所有已
+注册 Workspace，对每个已绑定 Skill 汇总本地候选并按 marker 时间与无损路径顺序全局选出
+一次更新来源；选中的中央更新
+完成后，再顺序 reconcile 请求 Workspace 和其他 Workspace。这样后处理 Workspace 不会因
+遍历顺序覆盖更晚的本地版本；同一批次首次发现的相同内容也只导入一次并关联全部明确目标。
+`WorkspaceEngine` 本身仍只处理传入的单个 Workspace。watcher 触发 reconcile 和周期性
+reconcile 尚未由 Tauri 应用调度，当前收敛只由用户显式 Sync 发起。
+
+### 4.6 根应用层与 SQLite adapter
+
+根 `yssskills` package 通过专用 `yssskills-application` 单线程 worker 拥有
+`Application`、`SqliteCatalog`、Harness registry 和本地文件端口。Tauri async command
+使用 message passing 把阻塞的数据库、扫描、hash 和文件写入工作交给该 worker，不持有
+同步锁跨 I/O；registry blocking client 则在 Tauri `spawn_blocking` 中独立执行。
+
+`SqliteCatalog` 是 `CentralCatalogPort` 的生产 adapter，并持久化：
+
+- application settings 与中央 catalog root；
+- catalog Skill 身份、来源和物理位置；
+- Agents/Project/Linked Workspace 定义；
+- `(SkillId, HarnessId, WorkspaceId)` deployment bindings；
+- Dashboard 使用的 catalog import/update 活动。
+
+数据库位于 Tauri app data 目录的 `yssskills.sqlite3`，当前 schema 使用
+`PRAGMA user_version = 1`、foreign keys、WAL 和 5 秒 busy timeout。路径以带平台 tag 的
+BLOB 保存：Unix 保留原始字节，Windows 保留 UTF-16LE code units，不能因数据库序列化
+强迫路径成为 UTF-8。IPC 另行提供可选无损字符串与始终可显示的 lossy projection。
+
+中央 Skill 使用 UUID 目录。导入先写入应用专用 `.yssskills-pending` staging 和数据库
+`pending` 状态，校验后 rename 并激活；同一进程只补偿删除已经原子取得所有权的路径。
+启动恢复会校验并清除 pending 数据库状态，但无法证明所有权的 staging/final 条目会保守
+保留，不能因一条 pending 记录递归删除并发出现或用户未知的内容。SQLite 只保存身份、来源
+和绑定；每次读取 catalog 列表/详情仍通过 `skill-local::read_skill` 重新验证磁盘内容和
+hash，数据库缓存不能替代本机文件事实。catalog 中已有 Skill 时禁止切换 catalog root。
 
 ## 5. Workspace 与部署模型
 
@@ -474,12 +510,14 @@ Harness 生成不同目标，具体是否可部署由 Harness capabilities 决�
    绑定参与传播，失败保留为结构化诊断，不阻断其他目标。
 4. 写操作完成后再次执行 `observe`，以重新扫描、读取和计算最终状态。
 
-中央库更新后的跨 Workspace 逐个 reconcile 属于应用层接入后的必需流程，当前 Tauri
-应用尚未接入；具体规则见 §4.5。
+中央库更新前的跨 Workspace 候选汇总和更新后的顺序 reconcile 已由根 application worker
+接入；具体规则见 §4.5。该流程只由显式 `reconcile_workspace` command 触发，普通 Refresh
+和 `observe_workspace` 仍保持只读。
 
 ### 6.2 远程 source reference 与本地物化边界
 
-当前已实现的是 crate 之间的能力边界，Tauri command 和前端尚未接入这条流程：
+当前远程查询已接入 Tauri command 和前端 service，但远程内容物化仍只实现了 crate
+之间的能力边界：
 
 1. `skill-registry` 的 client/parser 返回 `RemoteSkillSummary`、`SearchResult` 或
    `LeaderboardResult`；它只保留远程身份和响应元数据。
@@ -494,14 +532,15 @@ Harness 生成不同目标，具体是否可部署由 Harness capabilities 决�
 5. `skill-workspace` 继续负责 Agents/Project/Linked 目标、绑定和部署收敛；远程
    source reference 不直接变成 `InstalledSkill`、目标路径或本地事实。
 
-后续实现 Tauri/application 链路时，仍应通过 service/command 和明确的应用用例接入，
-而不是让前端或 command 直接执行网络、Git 或安装流程。
+后续实现 materialization/install 时，仍应通过 service/command 和明确的应用用例接入，
+而不是让前端或 command 直接执行 Git、解压或安装流程。
 
 ### 6.3 本地变化
 
-本节描述应用层接入后的必需流程；当前 Tauri 应用尚未接入 watcher→reconcile、
-周期性 reconcile 或中央库更新后的 Workspace 遍历。`WorkspaceEngine` 每次只处理
-传入的单个 Workspace。
+本节描述 watcher 自动调度接入后的必需流程；当前 Tauri 应用尚未接入
+watcher→reconcile 或周期性 reconcile。显式 Sync 已接入中央库更新前的全 Workspace
+候选汇总和更新后的 Workspace 遍历；`WorkspaceEngine` 每次仍只处理传入的单个
+Workspace。
 
 1. `skill-local` 的 `WatchManager` 持有 watcher 生命周期并接收 notify 原始事件；
    watcher 将事件去抖、合并，并转换为有限的本地变化类型。
@@ -522,16 +561,19 @@ Harness 生成不同目标，具体是否可部署由 Harness capabilities 决�
 
 ### 7.1 Tauri 应用 crate
 
-根 package `yssskills` 只承担接口和启动职责：
+根 package `yssskills` 承担启动、应用编排和接口 adapter 职责：
 
-1. 解析、校验 IPC 输入；
-2. 调用 `skill-workspace` 或明确的应用用例；
-3. 将领域/应用结果映射为公开的 IPC DTO；
-4. 将 typed error 统一映射为 IPC error DTO；
-5. 在需要时发出应用事件或转发 channel。
+1. command 接收 JSON request envelope，并显式反序列化、拒绝未知字段和校验 IPC 输入；
+2. command 调用 application worker 或 registry blocking adapter；
+3. application layer 编排 Dashboard、catalog、Harness、Workspace 和 settings 用例；
+4. 将领域/应用结果映射为公开的 camelCase IPC DTO；
+5. 将 typed error 在边界统一映射为稳定的 IPC error DTO。
 
-命令处理器不能包含递归扫描、网络编排、数据库逻辑、复制/链接细节或部署
-状态规则。Tauri 类型只能停留在接口层，不能进入业务 crate。
+当前 commands 包括 Dashboard overview、catalog Skill list/detail、Workspace overview/create/
+observe/reconcile、registry search/leaderboard 和 catalog root settings。命令处理器不包含递归
+扫描、数据库 SQL、复制/链接细节或部署状态规则；这些责任分别留在 application、
+`SqliteCatalog`、`skill-local` 和 `skill-workspace`。Tauri 类型只能停留在接口层，不能进入
+业务 crate。
 
 ### 7.2 前端
 
@@ -553,14 +595,17 @@ IPC DTO
 状态留在内存，跨会话偏好才进入适当的持久化层。
 
 当前前端入口由 `src/app/main.tsx` 加载 `src/app/App.tsx`，由
-`src/app/routes.tsx` 创建 `createHashRouter`。共享的 `AppLayout` 提供
-shadcn `SidebarProvider`、`SidebarInset`、顶部标题和路由出口；页面位于
-`src/app/pages/`。Hash 路由适用于 Tauri 的静态资源加载，不要求桌面应用为
-每个深层路径提供额外的服务器 fallback。当前页面使用静态演示数据；接入真实
-Skill 用例后，应通过 frontend service 和 typed IPC DTO 替换这些数据。
+`src/app/routes.tsx` 创建 `createHashRouter`。共享的 `AppLayout` 提供 shadcn
+`SidebarProvider`、`SidebarInset`、顶部标题和路由出口；页面位于
+`src/app/pages/`。Hash 路由适用于 Tauri 静态资源加载，不要求桌面应用为每个深层路径
+提供额外服务器 fallback。
 
-当前模板中的 `greet` 命令和直接 `invoke` 仅属于初始骨架。引入真实 Skill
-用例时，应按上述边界迁移，不把模板调用模式扩展成业务模式。
+`src/app/services/ipc-client.ts` 是业务 `invoke` 的唯一入口，负责未知 rejection 归一化和
+Zod strict response 校验；各领域 service 固定 command 名和 request envelope。application
+hooks 负责加载、刷新、stale request 抑制以及 Workspace create/observe/reconcile 等多步
+流程。五个页面均显示真实 loading/error/empty 状态：普通 Refresh 只读取或 observe，只有
+明确的 Sync 调用 reconcile。Registry install、Skill import/export/delete/Set CRUD、
+Workspace 编辑/删除和语言切换当前不可用，不得用本地 timer 或临时状态伪造成功。
 
 ## 8. 错误、诊断与日志
 
@@ -572,6 +617,8 @@ skill-harness    → HarnessError
 skill-local      → LocalError
 skill-registry   → RegistryError
 skill-workspace  → WorkspaceError
+SQLite adapter   → PersistenceError
+application      → ApplicationError
 Tauri boundary   → IPC Error DTO
 ```
 
@@ -606,23 +653,26 @@ Tauri boundary   → IPC Error DTO
 - `skill-local` 的安装操作不得静默覆盖用户文件。`copy_skill` 和 `link_skill` 要求
   调用方显式传入 `ExistingDestination`；只有显式 `Replace` 才能覆盖已有目标。
   `skill-workspace` 的 reconcile 自动收敛只能作用于已识别且已绑定的部署目标，具体
-  中央事实源和 marker 规则见 §4.5；不匹配或无法确认归属的目标不得被覆盖。覆盖、
-  删除和解除链接必须由编排用例明确授权，并在结果中说明实际动作。
+  中央事实源和 marker 规则见 §4.5；不匹配或无法确认归属的目标不得被覆盖。每次观察和
+  写入前还会检查 Workspace 安全根到目标 parent 的现有路径链，拒绝其中的 symlink、
+  junction 或 Windows reparse point；最终 Skill 路径本身可以是受管链接。该检查降低链接
+  逃逸风险，但标准路径 API 仍不是 hostile shared-directory 的强 sandbox。覆盖、删除和
+  解除链接必须由编排用例明确授权，并在结果中说明实际动作。
 - 认证 token、密码、连接字符串和完整 Skill 内容不得写入日志。
 
 ## 10. 测试策略
 
 测试通过各模块的公开 interface 和 seam 验证行为，不启动不必要的 Tauri runtime：
 
-| 模块 | 重点测试 |
-| --- | --- |
-| `skill-core` | `SkillId` 和 metadata 不变量、frontmatter/UTF-8 解析、字段缺失和解析错误。 |
-| `skill-harness` | 各 Harness 的位置规则、检测结果、能力声明和自定义 adapter；使用 fake 环境，不依赖真实用户配置。 |
-| `skill-local` | 临时目录中的扫描、读取、hash、复制/链接/junction、缺失权限和外部变化；watcher 测试只覆盖归一化后的行为。 |
-| `skill-registry` | skills.sh JSON/HTML 搜索与 leaderboard 解析（含明确 Next/RSC 容器、escaped payload、空/无效 envelope 和拒绝任意嵌入对象）、source kind 保留、GitHub/source reference 解析（含 drive/UNC/ref 字符和 HTTPS/SSH credential 安全）、URL/status/body-limit/Retry-After（delta/date）/transport kind/无效响应；使用 stdlib local HTTP seam，不依赖线上 registry。detail endpoint 当前未实现。 |
-| `skill-workspace` | 三种 Workspace 的部署状态转换、marker 修改时间选优、中央库收敛、能力不支持和操作后再验证；通过 `LocalSkillPort`/`CentralCatalogPort` seam 验证。 |
-| `yssskills` | IPC 请求/响应 DTO、一次性错误映射和必要的事件/channel 集成；限制 Tauri 相关测试范围。 |
-| 前端 | 用户可观察的加载、错误、状态刷新和同步状态交互；mock IPC/service seam，不复制 Rust 内部实现。 |
+| 模块              | 重点测试                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `skill-core`      | `SkillId` 和 metadata 不变量、frontmatter/UTF-8 解析、字段缺失和解析错误。                                                                                                                                                                                                                                                                                                              |
+| `skill-harness`   | 各 Harness 的位置规则、检测结果、能力声明和自定义 adapter；使用 fake 环境，不依赖真实用户配置。                                                                                                                                                                                                                                                                                         |
+| `skill-local`     | 临时目录中的扫描、读取、hash、复制/链接/junction、缺失权限和外部变化；watcher 测试只覆盖归一化后的行为。                                                                                                                                                                                                                                                                                |
+| `skill-registry`  | skills.sh JSON/HTML 搜索与 leaderboard 解析（含明确 Next/RSC 容器、escaped payload、空/无效 envelope 和拒绝任意嵌入对象）、source kind 保留、GitHub/source reference 解析（含 drive/UNC/ref 字符和 HTTPS/SSH credential 安全）、URL/status/body-limit/Retry-After（delta/date）/transport kind/无效响应；使用 stdlib local HTTP seam，不依赖线上 registry。detail endpoint 当前未实现。 |
+| `skill-workspace` | 三种 Workspace 的部署状态转换、marker 修改时间选优、中央库收敛、能力不支持和操作后再验证；通过 `LocalSkillPort`/`CentralCatalogPort` seam 验证。                                                                                                                                                                                                                                        |
+| `yssskills`       | SQLite migration/reopen、pending 恢复、Workspace/binding 持久化、跨 Workspace 全局候选择优、IPC 请求/响应 DTO 和一次性错误映射；限制 Tauri runtime 测试范围。                                                                                                                                                                                                                           |
+| 前端              | typed service 的 command/envelope/response/error 契约，以及用户可观察的加载、错误、刷新和显式同步交互；mock IPC/service seam，不复制 Rust 内部实现。                                                                                                                                                                                                                                    |
 
 每个行为只添加能够证明真实项目契约的最小回归测试。纯重构依赖既有覆盖；
 发生可观察行为变化时，先补充能够复现该变化的 focused test。
@@ -653,8 +703,22 @@ src-tauri/
 ├── src/
 │   ├── lib.rs
 │   ├── main.rs
+│   ├── application.rs
+│   ├── state.rs
+│   ├── persistence.rs
+│   ├── persistence/
+│   │   └── sqlite.rs
+│   ├── commands.rs
 │   ├── commands/
+│   │   ├── dashboard.rs
+│   │   ├── skills.rs
+│   │   ├── workspaces.rs
+│   │   ├── registry.rs
+│   │   └── settings.rs
+│   ├── ipc.rs
 │   └── ipc/
+│       ├── error.rs
+│       └── model.rs
 └── crates/
     ├── skill-core/
     │   ├── Cargo.toml
@@ -706,9 +770,21 @@ src-tauri/crates/skill-workspace/
     └── workspace_contract.rs
 ```
 
-crate 内部按领域职责组织，而不是按“所有 model 放一起、所有 service 放一起”
-组织。对外只暴露实现所需的最小 `pub` surface；文件系统、网络和 Tauri
-adapter 保持在各自的 seam 后面。
+前端对应的接口层按领域 service、application hook 和显式 boundary type 组织：
+
+```text
+src/
+├── app/
+│   ├── hooks/
+│   ├── pages/
+│   └── services/
+│       └── ipc-client.ts
+└── shared/types/
+```
+
+crate 内部按领域职责组织，而不是按“所有 model 放一起、所有 service 放一起”组织。对外
+只暴露实现所需的最小 `pub` surface；文件系统、SQLite、网络和 Tauri adapter 保持在各自
+seam 后面。
 
 ## 12. 演进规则
 
@@ -725,6 +801,6 @@ adapter 保持在各自的 seam 后面。
 类型才能完成工作，先重新检查 seam 和依赖方向；优先加深模块，而不是把
 复杂度转移给所有调用方。
 
-若将来增加 SQLite 或其他持久化，应将其作为 `skill-workspace`/应用层的
-基础设施 adapter。持久化不能替代本机磁盘和 Harness 目标的实际校验，也不能
-让 `skill-core` 依赖数据库。
+SQLite 已作为根 application layer 的 `CentralCatalogPort` 基础设施 adapter 接入。
+后续若替换或增加其他持久化实现，必须保持同一依赖方向：持久化不能替代本机磁盘和
+Harness 目标的实际校验，也不能让 `skill-core` 或业务 crate 依赖具体数据库。
