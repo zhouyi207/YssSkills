@@ -1,14 +1,12 @@
 mod commands;
-mod ipc;
 
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 
-use skill_registry::SkillsShClient;
 use tauri::Manager;
-use yss_api::{AppState, ApplicationHandle};
+use yss_api::YssApi;
 
 fn default_catalog_root(home_dir: &Path) -> PathBuf {
     home_dir.join(".yss-skills")
@@ -23,13 +21,8 @@ pub fn run() {
             let app_data = app.path().app_data_dir()?;
             let catalog_root = default_catalog_root(&app.path().home_dir()?);
             fs::create_dir_all(&app_data)?;
-            let application =
-                ApplicationHandle::start(app_data.join("yssskills.sqlite3"), catalog_root)?;
-            let registry = SkillsShClient::new()?;
-            app.manage(AppState {
-                application,
-                registry,
-            });
+            let api = YssApi::start(app_data.join("yssskills.sqlite3"), catalog_root)?;
+            app.manage(api);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -5741,23 +5741,11 @@ dependencies = [
 name = "yssskills"
 version = "0.1.0"
 dependencies = [
- "chrono",
- "rusqlite",
- "serde",
  "serde_json",
- "skill-core",
- "skill-harness",
- "skill-index",
- "skill-local",
- "skill-registry",
- "skill-workspace",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
- "tempfile",
- "thiserror 2.0.20",
- "uuid",
  "yss-api",
 ]
 

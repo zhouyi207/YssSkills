@@ -31,7 +31,7 @@ scripts，否则会形成递归。
 TypeScript 类型检查由 `tsc` 负责；JavaScript/TypeScript lint 使用 Oxlint，
 格式化使用 Oxfmt。Vitest 在继承默认排除规则的基础上忽略 `.worktrees/**`，
 主工作区测试和 CI 不扫描隔离 worktree。Rust scripts 使用 `--workspace`/`--all`
-覆盖 `yssbi` 和 `yss-sci`，并保持 Cargo 默认构建和链接并行度，不固定 build jobs。
+覆盖根 Tauri package 与全部业务 crate，并保持 Cargo 默认构建和链接并行度，不固定 build jobs。
 
 Rust 测试使用 Cargo 内置 test runner。仓库不固定 build jobs 或 test threads，
 `pnpm test:rs` 继承 Cargo 与 libtest 的默认并发。
@@ -53,10 +53,9 @@ workspace 和 `src-tauri/target/`：
 ```sh
 pnpm test:ts src/path/to/example.test.ts
 pnpm test:ts src/path/to/example.test.ts -t "test name"
-pnpm test:rs --lib completed_task_has_terminal_status
-pnpm test:rs --test database_test test_duckdb_query_page_and_schema_without_full_load
-pnpm test:rs -p yss-sci test_name
-julia --project=src-tauri/julia src-tauri/julia/tests/bayes_fit_tests.jl
+pnpm test:rs -p yss-api skill_set
+pnpm test:rs -p skill-registry leaderboard_parser
+pnpm test:rs -p skill-local --test differences_contract
 ```
 
 ## 按改动范围验证

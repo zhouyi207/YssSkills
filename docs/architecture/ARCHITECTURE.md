@@ -67,7 +67,7 @@ Cargo workspace。
 flowchart TD
     UI[React UI] --> FrontendService[Frontend service / hooks]
     FrontendService --> IPC[Tauri IPC commands and events]
-    IPC --> AppWorker[yssskills application worker]
+    IPC --> AppWorker[yss-api application worker]
     AppWorker --> Workspace[skill-workspace]
     AppWorker --> Registry[skill-registry]
     AppWorker --> Persistence[Filesystem catalog / application state adapter]
@@ -102,7 +102,7 @@ flowchart TD
 
 | Cargo package     | Rust library      | 责任                                                                                    |
 | ----------------- | ----------------- | --------------------------------------------------------------------------------------- |
-| `yssskills`       | `yssskills_lib`   | Tauri 启动、application worker、SQLite adapter、commands 和 IPC DTO；保留现有外壳名称。 |
+| `yssskills`       | `yssskills_lib`   | Tauri 启动、state registration 和 command transport adapter；保留现有外壳名称。        |
 | `skill-core`      | `skill_core`      | Skill 领域模型、解析结果和纯领域规则。                                                  |
 | `skill-harness`   | `skill_harness`   | Harness 描述、检测、路径和能力适配。                                                    |
 | `skill-index`     | `skill_index`     | 可丢弃的 SQLite Skill 派生索引、查询、reconcile、rebuild 和 schema 自恢复。             |
@@ -133,8 +133,9 @@ members = [
 ]
 ```
 
-根 package `yssskills` 仍然是 Tauri 应用，负责把 IPC 请求交给 application worker，
-再由应用层调用 `skill-workspace`、SQLite adapter 或 `skill-registry`。各业务 crate 使用
+根 package `yssskills` 仍然是 Tauri 应用，只负责把 IPC 请求交给 `YssApi` façade；
+再由 `yss-api` 调用 application worker、`skill-workspace`、SQLite adapter 或
+`skill-registry`。各业务 crate 使用
 自己的 `Cargo.toml` 和最小依赖集合，共享根目录下的 `Cargo.lock` 与构建产物。
 
 ## 4. 模块职责与接口
@@ -609,7 +610,7 @@ Harness 生成不同目标，具体是否可部署由 Harness capabilities 决�
    绑定参与传播，失败保留为结构化诊断，不阻断其他目标。
 4. 写操作完成后再次执行 `observe`，以重新扫描、读取和计算最终状态。
 
-中央库更新前的跨 Workspace 候选汇总和更新后的顺序 reconcile 已由根 application worker
+中央库更新前的跨 Workspace 候选汇总和更新后的顺序 reconcile 已由 `yss-api` application worker
 接入；具体规则见 §4.5。该流程只由显式 `reconcile_workspace` command 触发：Workspaces
 的 Sync 和 Skills 页的 Refresh 都是明确入口；`observe_workspace` 及其他页面 Refresh
 仍保持只读。
@@ -622,7 +623,7 @@ Harness 生成不同目标，具体是否可部署由 Harness capabilities 决�
    `LeaderboardResult`；它只保留远程身份和响应元数据。
 2. Catalog update plan 只接受 `.agents/.skill-lock.json` 中同时具有受支持 `sourceType`、
    `sourceUrl` 和 `skillPath` 的 Skill；Set selection 在后端展开为有序去重的 member SkillId。
-3. Tauri command 先在 application worker 中取得只读 plan，随后在 worker 外的
+3. `YssApi` 先在 application worker 中取得只读 plan，随后在 worker 外的
    `spawn_blocking` 中按 `(sourceUrl, ref)` 分组调用 `GitCheckout`。Git subprocess 不持有应用
    状态或数据库锁。
 4. `skill-local` 从受控 tracked-file staging 读取、解析和 hash；application worker 应用前重新
@@ -660,16 +661,17 @@ reconcile 或周期性 Workspace reconcile。显式 Sync 已接入中央库更�
 
 ## 7. Tauri 与前端边界
 
-### 7.1 Tauri 应用 crate
+### 7.1 Tauri transport crate
 
-根 package `yssskills` 承担启动、应用编排和接口 adapter 职责：
+根 package `yssskills` 只承担 Tauri startup/state registration 和 transport adapter 职责：
 
 1. command 接收 JSON request envelope，并显式反序列化、拒绝未知字段和校验 IPC 输入；
-2. command 调用 application worker 或 registry blocking adapter；
-3. application layer 编排 Dashboard、catalog、Harness、Workspace 和 settings 用例；
-4. 调用 `yss-api` 将领域/应用结果映射为公开的 camelCase IPC DTO；
-5. 复用 `yss-api` 的 typed error 到稳定 IPC error DTO 映射；根 `ipc` 只适配尚在 Tauri
-   package 内的 worker transport error。
+2. 通用 `run_api` wrapper 把阻塞调用交给 Tauri blocking pool；
+3. command 只调用对应 `YssApi` 方法并原样返回 DTO/error。
+
+Dashboard、catalog、Harness、Workspace、settings、registry、DTO/error mapping 与 worker
+lifecycle 全部由 `yss-api` 负责。根 package 不再拥有业务状态、SQLite、filesystem、registry
+client 或业务 crate 的直接依赖。
 
 当前 commands 包括 Dashboard overview、catalog Skill list/detail/delete/export、local folder
 import scan/import、Workspace overview/detect-agents/add-detected-agents/delete-agents/create/
@@ -830,7 +832,8 @@ Tauri boundary   → IPC Error DTO
 | `skill-index`     | filesystem-only rebuild、metadata skip、增删改 reconcile、无效 Skill 隔离、原子替换、索引删库恢复和不兼容 schema 安全重建。                                                                                                                                                                                                                                                             |
 | `skill-registry`  | skills.sh JSON/HTML 搜索与 leaderboard 解析（含明确 Next/RSC 容器、escaped payload、空/无效 envelope 和拒绝任意嵌入对象）、source kind 保留、GitHub/source reference 解析（含 drive/UNC/ref 字符和 HTTPS/SSH credential 安全）、URL/status/body-limit/Retry-After（delta/date）/transport kind/无效响应；使用 stdlib local HTTP seam，不依赖线上 registry。detail endpoint 当前未实现。 |
 | `skill-workspace` | 三种 Workspace 的部署状态转换、marker 修改时间选优、中央库收敛、能力不支持和操作后再验证；通过 `LocalSkillPort`/`CentralCatalogPort` seam 验证。                                                                                                                                                                                                                                        |
-| `yssskills`       | 文件系统 Catalog 发现/import/update、确定性 SkillId、SQLite schema initialization/reopen、Workspace/binding 持久化、跨 Workspace 全局候选择优、IPC 请求/响应 DTO 和一次性错误映射；限制 Tauri runtime 测试范围。                                                                                                                                                                        |
+| `yss-api`         | Catalog/import/update、Set、Workspace、SQLite、worker lifecycle、request/response DTO 与一次性错误映射；通过 public façade 和内部 seam 测试，不启动 Tauri。                                                                                                                                                                                                                           |
+| `yssskills`       | Tauri startup、command 注册及 transport wrapper；业务行为由前端 service contract 与 `yss-api` 测试覆盖，不复制业务测试。                                                                                                                                                                                                                                                               |
 | 前端              | typed service 的 command/envelope/response/error 契约，以及用户可观察的加载、错误、刷新和显式同步交互；mock IPC/service seam，不复制 Rust 内部实现。                                                                                                                                                                                                                                    |
 
 每个行为只添加能够证明真实项目契约的最小回归测试。纯重构依赖既有覆盖；
@@ -862,11 +865,6 @@ src-tauri/
 ├── src/
 │   ├── lib.rs
 │   ├── main.rs
-│   ├── application.rs
-│   ├── state.rs
-│   ├── persistence.rs
-│   ├── persistence/
-│   │   └── sqlite.rs
 │   ├── commands.rs
 │   ├── commands/
 │   │   ├── dashboard.rs
@@ -874,10 +872,6 @@ src-tauri/
 │   │   ├── workspaces.rs
 │   │   ├── registry.rs
 │   │   └── settings.rs
-│   ├── ipc.rs
-│   └── ipc/
-│       ├── error.rs
-│       └── model.rs
 └── crates/
     ├── skill-core/
     │   ├── Cargo.toml
@@ -897,10 +891,23 @@ src-tauri/
     │   ├── Cargo.toml
     │   ├── src/
     │   └── tests/
-    └── skill-workspace/
+    ├── skill-workspace/
+    │   ├── Cargo.toml
+    │   ├── src/
+    │   └── tests/
+    └── yss-api/
         ├── Cargo.toml
-        ├── src/
-        └── tests/
+        └── src/
+            ├── lib.rs
+            ├── facade.rs
+            ├── runtime.rs
+            ├── application.rs
+            ├── dto.rs
+            ├── error.rs
+            ├── agent_config.rs
+            ├── persistence.rs
+            └── persistence/
+                └── sqlite.rs
 ```
 
 当前已接入的 `skill-registry` 最小结构如下：

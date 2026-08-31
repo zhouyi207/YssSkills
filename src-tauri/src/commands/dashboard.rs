@@ -1,18 +1,11 @@
 use tauri::State;
-use yss_api::AppState;
+use yss_api::{DashboardOverviewDto, IpcError, YssApi};
 
-use crate::{
-    commands::run_application,
-    ipc::{DashboardOverviewDto, IpcError},
-};
+use crate::commands::run_api;
 
 #[tauri::command]
 pub async fn get_dashboard_overview(
-    state: State<'_, AppState>,
+    state: State<'_, YssApi>,
 ) -> Result<DashboardOverviewDto, IpcError> {
-    let overview = run_application(state.application.clone(), |application| {
-        application.dashboard_overview()
-    })
-    .await?;
-    Ok(overview.into())
+    run_api(state.inner().clone(), YssApi::get_dashboard_overview).await
 }

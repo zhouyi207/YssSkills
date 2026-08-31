@@ -12,7 +12,6 @@ use std::{
 
 use skill_index::{IndexError, SkillIndex};
 use skill_local::{WatchManager, WatchTarget, WatchTargetKind};
-use skill_registry::SkillsShClient;
 use thiserror::Error;
 
 use crate::{Application, ApplicationError, CatalogIndexWorkerConfig};
@@ -40,11 +39,6 @@ struct ApplicationRuntime {
     cancellation: Arc<AtomicBool>,
     application_thread: Mutex<Option<JoinHandle<()>>>,
     index_thread: Mutex<Option<JoinHandle<()>>>,
-}
-
-pub struct AppState {
-    pub application: ApplicationHandle,
-    pub registry: SkillsShClient,
 }
 
 #[derive(Debug, Error)]
