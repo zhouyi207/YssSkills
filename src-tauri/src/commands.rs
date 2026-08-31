@@ -7,11 +7,8 @@ pub(crate) mod workspaces;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::{
-    application::{Application, ApplicationError},
-    ipc::IpcError,
-    state::ApplicationHandle,
-};
+use crate::{ipc::IpcError, state::ApplicationHandle};
+use yss_api::{Application, ApplicationError};
 
 fn parse_request<T>(request: Option<Value>) -> Result<T, IpcError>
 where

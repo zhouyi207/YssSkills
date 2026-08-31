@@ -7,10 +7,8 @@ use skill_local::LocalError;
 use skill_registry::{RegistryError, RetryAfter};
 use skill_workspace::{CatalogFailure, WorkspaceError};
 
-use crate::{
-    agent_config::AgentConfigError, application::ApplicationError, persistence::PersistenceError,
-    state::ApplicationWorkerError,
-};
+use crate::state::ApplicationWorkerError;
+use yss_api::{AgentConfigError, ApplicationError, PersistenceError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

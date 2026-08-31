@@ -12,21 +12,18 @@ use skill_workspace::{
     WorkspaceDiagnostic, WorkspaceKind, WorkspaceReport, WorkspaceResolution, WorkspaceTarget,
 };
 
-use crate::{
-    application::{
-        AddDetectedAgentsOutcome, AgentDetectionDiagnostic, AgentDetectionOutcome, AppSettings,
-        CatalogIndexFreshness, CatalogIndexRebuildOutcome, CatalogSkillDetail, CatalogSkillList,
-        CatalogSkillSummary, CatalogSkillUpdateFailure, CatalogSkillUpdateFailureKind,
-        CatalogSkillUpdateOutcome, CopyProjectAgentSkillsInput, CopyProjectAgentSkillsOutcome,
-        CreateWorkspaceInput, CreateWorkspaceKind, DashboardOverview, DeleteAgentsOutcome,
-        DeleteProjectAgentsOutcome, DetectedAgent, ExportSkillsOutcome, HarnessOverview,
-        HarnessProbe, ImportCandidate, ImportFolderDiagnostic, ImportFolderPreview,
-        ImportSkillsOutcome, ProjectAgentOverview, PropagationOutcome, SaveAgentInput,
-        SaveAgentOutcome, SkillSetSummary, WorkspaceObservation, WorkspaceReconcileOutcome,
-        WorkspaceSummary, WorkspacesOverview,
-    },
-    ipc::IpcError,
-    persistence::StoredWorkspace,
+use crate::ipc::IpcError;
+use yss_api::{
+    AddDetectedAgentsOutcome, AgentDetectionDiagnostic, AgentDetectionOutcome, AppSettings,
+    CatalogIndexFreshness, CatalogIndexRebuildOutcome, CatalogSkillDetail, CatalogSkillList,
+    CatalogSkillSummary, CatalogSkillUpdateFailure, CatalogSkillUpdateFailureKind,
+    CatalogSkillUpdateOutcome, CopyProjectAgentSkillsInput, CopyProjectAgentSkillsOutcome,
+    CreateWorkspaceInput, CreateWorkspaceKind, DashboardOverview, DeleteAgentsOutcome,
+    DeleteProjectAgentsOutcome, DetectedAgent, ExportSkillsOutcome, HarnessOverview, HarnessProbe,
+    ImportCandidate, ImportFolderDiagnostic, ImportFolderPreview, ImportSkillsOutcome,
+    ProjectAgentOverview, PropagationOutcome, SaveAgentInput, SaveAgentOutcome, SkillSetSummary,
+    StoredWorkspace, WorkspaceObservation, WorkspaceReconcileOutcome, WorkspaceSummary,
+    WorkspacesOverview,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -898,8 +895,8 @@ impl From<DetectedAgent> for DetectedAgentDto {
 impl From<AgentDetectionDiagnostic> for AgentDetectionDiagnosticDto {
     fn from(value: AgentDetectionDiagnostic) -> Self {
         let error = match value.error {
-            crate::application::AgentDetectionError::Harness(error) => error.into(),
-            crate::application::AgentDetectionError::Local(error) => error.into(),
+            yss_api::AgentDetectionError::Harness(error) => error.into(),
+            yss_api::AgentDetectionError::Local(error) => error.into(),
         };
         Self {
             detector_id: value.detector_id.to_string(),

@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use tauri::State;
+use yss_api::fetch_catalog_skill_updates;
 
 use crate::{
-    application::fetch_catalog_skill_updates,
     commands::{parse_request, run_application},
     ipc::{
         CatalogSkillDetailDto, CatalogSkillsResponseDto, CreateSkillSetRequestDto,

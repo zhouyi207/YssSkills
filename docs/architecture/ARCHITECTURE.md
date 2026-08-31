@@ -20,6 +20,8 @@ YssSkills 是一个通过 Tauri 提供桌面界面的 Skill 管理器。它需�
 - `src-tauri/Cargo.toml` 声明 Cargo workspace，包含根 `yssskills` Tauri package、
   `crates/skill-core`、`crates/skill-harness`、`crates/skill-index`、`crates/skill-local`、
   `crates/skill-registry` 和 `crates/skill-workspace`；
+- `crates/yss-api` 提供 framework-independent application workflow、Agent 配置 store 与
+  filesystem/SQLite persistence adapter；
 - `skill-core` 提供纯领域类型、`SKILL.md` frontmatter 解析、marker 规则、名称安全
   规范化和 focused tests；
 - `skill-harness` 提供内置 Harness、检测与路径解析、能力声明以及自定义 adapter；
@@ -32,8 +34,8 @@ YssSkills 是一个通过 Tauri 提供桌面界面的 Skill 管理器。它需�
   errors；
 - `skill-workspace` 提供 Agents/Project/Linked Workspace 模型、目标解析、只读
   `observe`、中央库收敛式 `reconcile` 以及相应公开端口；
-- 根 `yssskills` package 提供 SQLite 中央 catalog/Workspace adapter、专用 application
-  worker、显式 IPC DTO、结构化错误映射和 Tauri commands；
+- `yss-api` 提供 SQLite 中央 catalog/Workspace adapter 和 application workflow；根
+  `yssskills` package 暂保留专用 worker、显式 IPC DTO、结构化错误映射和 Tauri commands；
 - 前端 Dashboard、Skills、Workspaces、Registry、Settings 页面通过 application hooks 和
   typed services 调用真实 commands，所有业务 `invoke` 集中在 IPC client；
 - registry install、Workspace watcher 自动调度、周期性 reconcile、自定义
@@ -106,6 +108,7 @@ flowchart TD
 | `skill-local`     | `skill_local`     | 本机文件系统上的扫描、安装、监听和变化检测。                                            |
 | `skill-registry`  | `skill_registry`  | 远程 registry 的搜索/leaderboard 响应解析、source reference 和来源分类解析。            |
 | `skill-workspace` | `skill_workspace` | Agents/Project/Linked Workspace 及部署同步编排。                                        |
+| `yss-api`         | `yss_api`         | 面向前端用例的 application workflow、配置与 persistence adapter；不依赖 Tauri。         |
 
 `skill-harness` 比单独使用 `harness` 更能表达它管理的是 Agent Skill Harness；
 `skill-workspace` 则避免与 Cargo workspace 概念混淆。当前 workspace member 以第
@@ -125,6 +128,7 @@ members = [
     "crates/skill-local",
     "crates/skill-registry",
     "crates/skill-workspace",
+    "crates/yss-api",
 ]
 ```
 
@@ -456,10 +460,11 @@ marker 修改时间都可用、同时本地 marker 明确晚于中央 marker 时
 `WorkspaceEngine` 本身仍只处理传入的单个 Workspace。watcher 触发 reconcile 和周期性
 reconcile 尚未由 Tauri 应用调度，当前收敛只由用户显式 Sync 发起。
 
-### 4.6 根应用层、文件系统 Catalog 与 SQLite adapter
+### 4.6 `yss-api` 应用层、文件系统 Catalog 与 SQLite adapter
 
-根 `yssskills` package 通过专用 `yssskills-application` 单线程 worker 拥有
-`Application`、`PersistentCatalog`、Harness registry 和本地文件端口。Tauri async command
+`yss-api` crate 拥有 `Application`、`PersistentCatalog`、Agent 配置 store、Harness registry
+和本地文件端口，且不依赖 Tauri。当前根 `yssskills` package 仍通过专用
+`yssskills-application` 单线程 worker 持有 `Application`；Tauri async command
 使用 message passing 把阻塞的数据库和文件写入工作交给该 worker，不持有同步锁跨 I/O；
 独立的 `yssskills-skill-index` worker 在不占用 application command 队列的情况下执行启动
 reconcile、metadata scan、parse/hash 和 watcher 驱动的索引更新。registry blocking client 则在

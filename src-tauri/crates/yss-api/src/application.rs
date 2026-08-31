@@ -393,7 +393,7 @@ impl Application {
         Ok(application)
     }
 
-    pub(crate) fn catalog_index_worker_config(&self) -> CatalogIndexWorkerConfig {
+    pub fn catalog_index_worker_config(&self) -> CatalogIndexWorkerConfig {
         self.catalog.catalog_index_worker_config()
     }
 

@@ -5719,6 +5719,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "yss-api"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "skill-core",
+ "skill-harness",
+ "skill-index",
+ "skill-local",
+ "skill-registry",
+ "skill-workspace",
+ "tempfile",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
 name = "yssskills"
 version = "0.1.0"
 dependencies = [
@@ -5739,6 +5758,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "uuid",
+ "yss-api",
 ]
 
 [[package]]

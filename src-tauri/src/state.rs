@@ -15,8 +15,7 @@ use skill_local::{WatchManager, WatchTarget, WatchTargetKind};
 use skill_registry::SkillsShClient;
 use thiserror::Error;
 
-use crate::application::{Application, ApplicationError};
-use crate::persistence::CatalogIndexWorkerConfig;
+use yss_api::{Application, ApplicationError, CatalogIndexWorkerConfig};
 
 type ApplicationJob = Box<dyn FnOnce(&mut Application) + Send + 'static>;
 
@@ -383,7 +382,7 @@ mod tests {
 
     fn wait_for_catalog(
         handle: &ApplicationHandle,
-        predicate: impl Fn(&crate::application::CatalogSkillList) -> bool,
+        predicate: impl Fn(&yss_api::CatalogSkillList) -> bool,
     ) {
         let deadline = Instant::now() + Duration::from_secs(8);
         loop {
