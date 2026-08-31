@@ -5,13 +5,42 @@ import { ipcErrorSchema, type IpcError } from "@/shared/types/ipc";
 
 type InvokeArguments = Record<string, unknown>;
 
-function createClientError(code: string, message: string, command: string): IpcError {
+function createClientError(
+  code: string,
+  message: string,
+  command: string,
+  reason?: string,
+): IpcError {
   return {
     code,
     message,
     retryable: false,
-    context: { command },
+    context: { command, ...(reason ? { reason } : {}) },
   };
+}
+
+function responseValidationReason(issues: ReadonlyArray<{ path: PropertyKey[]; message: string }>) {
+  return issues
+    .map((issue) => {
+      const path = issue.path.length > 0 ? issue.path.map(String).join(".") : "response";
+      return `${path}: ${issue.message}`;
+    })
+    .join("; ");
+}
+
+export function getUnknownErrorReason(value: unknown): string | null {
+  const reason =
+    value instanceof Error
+      ? value.message.trim()
+      : typeof value === "string"
+        ? value.trim()
+        : typeof value === "object" &&
+            value !== null &&
+            "message" in value &&
+            typeof value.message === "string"
+          ? value.message.trim()
+          : "";
+  return reason || null;
 }
 
 export function isIpcError(value: unknown): value is IpcError {
@@ -25,7 +54,12 @@ export function normalizeIpcError(rejection: unknown, command: string): IpcError
     return result.data;
   }
 
-  return createClientError("ipc.invoke_failed", "The application request failed.", command);
+  return createClientError(
+    "ipc.invoke_failed",
+    "The application request failed.",
+    command,
+    getUnknownErrorReason(rejection) ?? undefined,
+  );
 }
 
 export async function invokeCommand<Response>(
@@ -49,6 +83,7 @@ export async function invokeCommand<Response>(
       "ipc.invalid_response",
       "The application returned an invalid response.",
       command,
+      responseValidationReason(result.error.issues),
     );
   }
 

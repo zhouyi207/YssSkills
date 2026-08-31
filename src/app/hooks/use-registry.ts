@@ -41,7 +41,7 @@ export function useRegistry() {
       return result;
     } catch (caught: unknown) {
       if (requestId.current === currentRequest) {
-        setError(isIpcError(caught) ? caught : unexpectedClientError());
+        setError(isIpcError(caught) ? caught : unexpectedClientError(caught));
       }
       return null;
     } finally {

@@ -41,7 +41,7 @@ export function useCatalogSkills() {
       const refreshedCatalog = await resource.refresh();
       return refreshedCatalog === null ? null : outcome;
     } catch (caught: unknown) {
-      setRefreshError(isIpcError(caught) ? caught : unexpectedClientError());
+      setRefreshError(isIpcError(caught) ? caught : unexpectedClientError(caught));
       return null;
     } finally {
       setIsReconcilingAgents(false);
@@ -61,7 +61,7 @@ export function useCatalogSkills() {
       }
     } catch (caught: unknown) {
       if (detailRequestId.current === requestId) {
-        setDetailError(isIpcError(caught) ? caught : unexpectedClientError());
+        setDetailError(isIpcError(caught) ? caught : unexpectedClientError(caught));
       }
     } finally {
       if (detailRequestId.current === requestId) {
@@ -86,7 +86,7 @@ export function useCatalogSkills() {
         await resource.refresh();
         return response.deletedSkillIds;
       } catch (caught: unknown) {
-        setDeleteError(isIpcError(caught) ? caught : unexpectedClientError());
+        setDeleteError(isIpcError(caught) ? caught : unexpectedClientError(caught));
         return null;
       } finally {
         setIsDeleting(false);
@@ -102,7 +102,7 @@ export function useCatalogSkills() {
       try {
         return await skillsService.scanImportFolder({ root });
       } catch (caught: unknown) {
-        const error = isIpcError(caught) ? caught : unexpectedClientError();
+        const error = isIpcError(caught) ? caught : unexpectedClientError(caught);
         setImportError(error);
         throw error;
       } finally {
@@ -121,7 +121,7 @@ export function useCatalogSkills() {
         await resource.refresh();
         return response;
       } catch (caught: unknown) {
-        const error = isIpcError(caught) ? caught : unexpectedClientError();
+        const error = isIpcError(caught) ? caught : unexpectedClientError(caught);
         setImportError(error);
         throw error;
       } finally {
@@ -139,7 +139,7 @@ export function useCatalogSkills() {
       try {
         return await skillsService.exportCatalogSkills(request);
       } catch (caught: unknown) {
-        throw isIpcError(caught) ? caught : unexpectedClientError();
+        throw isIpcError(caught) ? caught : unexpectedClientError(caught);
       } finally {
         setIsExporting(false);
       }
@@ -153,6 +153,8 @@ export function useCatalogSkills() {
     isRefreshing: isReconcilingAgents || resource.isRefreshing,
     refresh,
     skills: resource.data?.skills ?? [],
+    indexDiagnostics: resource.data?.diagnostics ?? [],
+    indexStatus: resource.data?.index ?? null,
     detail,
     detailError,
     isDetailLoading,

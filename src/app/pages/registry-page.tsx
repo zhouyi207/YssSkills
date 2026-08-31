@@ -3,7 +3,9 @@ import { RiDownloadLine, RiExternalLinkLine, RiRefreshLine, RiSearchLine } from 
 import { toast } from "sonner";
 
 import { useRegistry } from "@/app/hooks/use-registry";
+import { formatUnknownError } from "@/app/services/ipc-error-presentation";
 import { registryService } from "@/app/services/registry-service";
+import { IpcErrorDetails } from "@/components/ipc-error-details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -21,8 +23,8 @@ function registrySkillKey(skill: RegistrySkillSummaryDto) {
 async function openRegistryDetails(detailsUrl: string) {
   try {
     await registryService.openDetails(detailsUrl);
-  } catch {
-    toast.error("Unable to open registry details.");
+  } catch (caught: unknown) {
+    toast.error(formatUnknownError(caught, "Unable to open registry details."));
   }
 }
 
@@ -203,7 +205,7 @@ export function RegistryPage() {
             <p className="text-sm font-medium">
               {isQueryValidationError ? "Search query is too short" : "Unable to load registry"}
             </p>
-            <p className="mt-1 text-sm text-muted-foreground">{error.message}</p>
+            <IpcErrorDetails error={error} className="mt-1" />
             {retryDelaySeconds !== null ? (
               <p className="mt-1 text-sm text-muted-foreground">
                 Retry available in {installCountFormatter.format(retryDelaySeconds)} seconds.

@@ -51,6 +51,21 @@ const catalogSkill = {
   deploymentCount: 0,
 };
 
+const catalogIndex = {
+  freshness: "fresh",
+  revision: 1,
+  lastReconciledAtEpochMillis: null,
+};
+
+const rebuildCatalogIndexOutcome = {
+  inserted: 1,
+  updated: 0,
+  removed: 0,
+  unchanged: 0,
+  invalid: 0,
+  revision: 1,
+};
+
 const workspace = {
   id: "workspace-1",
   name: "Agents",
@@ -117,7 +132,8 @@ describe("IPC services", () => {
   it("uses the backend command names and request envelope", async () => {
     invokeMock
       .mockResolvedValueOnce(dashboardResponse)
-      .mockResolvedValueOnce({ skills: [catalogSkill] })
+      .mockResolvedValueOnce({ skills: [catalogSkill], diagnostics: [], index: catalogIndex })
+      .mockResolvedValueOnce(rebuildCatalogIndexOutcome)
       .mockResolvedValueOnce({ skill: catalogSkill, body: "# Example" })
       .mockResolvedValueOnce({
         agentsWorkspaceId: workspace.id,
@@ -146,6 +162,7 @@ describe("IPC services", () => {
 
     await dashboardService.getDashboardOverview();
     await skillsService.listCatalogSkills();
+    await skillsService.rebuildCatalogIndex();
     await skillsService.getCatalogSkill(skillRequest);
     await workspacesService.getWorkspacesOverview();
     await workspacesService.createWorkspace(createRequest);
@@ -160,6 +177,7 @@ describe("IPC services", () => {
     expect(invokeMock.mock.calls).toEqual([
       ["get_dashboard_overview"],
       ["list_catalog_skills"],
+      ["rebuild_catalog_index"],
       ["get_catalog_skill", { request: skillRequest }],
       ["get_workspaces_overview"],
       ["create_workspace", { request: createRequest }],
@@ -182,12 +200,17 @@ describe("IPC services", () => {
       },
     });
 
-    await expect(dashboardService.getDashboardOverview()).rejects.toEqual({
-      code: "ipc.invalid_response",
-      message: "The application returned an invalid response.",
-      retryable: false,
-      context: { command: "get_dashboard_overview" },
-    });
+    await expect(dashboardService.getDashboardOverview()).rejects.toEqual(
+      expect.objectContaining({
+        code: "ipc.invalid_response",
+        message: "The application returned an invalid response.",
+        retryable: false,
+        context: expect.objectContaining({
+          command: "get_dashboard_overview",
+          reason: expect.stringContaining("unexpected"),
+        }),
+      }),
+    );
   });
 
   it("reconciles the agents workspace through its reported workspace id", async () => {
@@ -221,7 +244,7 @@ describe("IPC services", () => {
     );
   });
 
-  it("maps an unknown rejection to a stable fallback without parsing its message", async () => {
+  it("maps an unknown rejection to a stable fallback while preserving its safe reason", async () => {
     invokeMock.mockRejectedValueOnce(
       new Error('{"code":"registry.rate_limited","message":"not a transport contract"}'),
     );
@@ -230,7 +253,10 @@ describe("IPC services", () => {
       code: "ipc.invoke_failed",
       message: "The application request failed.",
       retryable: false,
-      context: { command: "get_app_settings" },
+      context: {
+        command: "get_app_settings",
+        reason: '{"code":"registry.rate_limited","message":"not a transport contract"}',
+      },
     });
   });
 });

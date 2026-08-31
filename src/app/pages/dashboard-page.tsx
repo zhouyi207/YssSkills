@@ -2,6 +2,7 @@ import { RiRefreshLine } from "@remixicon/react";
 
 import { useDashboardOverview } from "@/app/hooks/use-dashboard-overview";
 import { ChartAreaInteractive } from "@/components/chart-area-interactive";
+import { IpcErrorDetails } from "@/components/ipc-error-details";
 import { SectionCards } from "@/components/section-cards";
 import { Button } from "@/components/ui/button";
 
@@ -40,10 +41,11 @@ export function DashboardPage() {
       ) : null}
 
       {!isLoading && error && !data ? (
-        <div role="alert" className="flex shrink-0 items-center justify-between">
-          <p className="font-heading text-sm font-medium">
-            Unable to load the overview: {error.message} ({error.code})
-          </p>
+        <div role="alert" className="flex shrink-0 items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="font-heading text-sm font-medium">Unable to load the overview</p>
+            <IpcErrorDetails error={error} compact />
+          </div>
           <Button type="button" variant="outline" size="sm" onClick={handleRefresh}>
             <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
             Retry
@@ -52,10 +54,11 @@ export function DashboardPage() {
       ) : null}
 
       {!isLoading && data && error ? (
-        <div role="alert" className="flex shrink-0 items-center justify-between">
-          <p className="font-heading text-sm font-medium">
-            Unable to refresh the overview: {error.message} ({error.code})
-          </p>
+        <div role="alert" className="flex shrink-0 items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="font-heading text-sm font-medium">Unable to refresh the overview</p>
+            <IpcErrorDetails error={error} compact />
+          </div>
           <Button
             type="button"
             variant="outline"

@@ -44,7 +44,7 @@ export function useWorkspaces() {
       return next;
     } catch (caught: unknown) {
       if (observationRequestId.current === requestId) {
-        setObservationError(isIpcError(caught) ? caught : unexpectedClientError());
+        setObservationError(isIpcError(caught) ? caught : unexpectedClientError(caught));
       }
       return null;
     } finally {
@@ -67,7 +67,7 @@ export function useWorkspaces() {
         await resource.refresh();
         return created;
       } catch (caught: unknown) {
-        setMutationError(isIpcError(caught) ? caught : unexpectedClientError());
+        setMutationError(isIpcError(caught) ? caught : unexpectedClientError(caught));
         return null;
       } finally {
         setIsMutating(false);
@@ -82,7 +82,7 @@ export function useWorkspaces() {
     try {
       return await workspacesService.detectAgents();
     } catch (caught: unknown) {
-      setDetectionError(isIpcError(caught) ? caught : unexpectedClientError());
+      setDetectionError(isIpcError(caught) ? caught : unexpectedClientError(caught));
       return null;
     } finally {
       setIsDetectingAgents(false);
@@ -98,7 +98,7 @@ export function useWorkspaces() {
         await resource.refresh();
         return outcome;
       } catch (caught: unknown) {
-        setMutationError(isIpcError(caught) ? caught : unexpectedClientError());
+        setMutationError(isIpcError(caught) ? caught : unexpectedClientError(caught));
         return null;
       } finally {
         setIsMutating(false);
@@ -116,7 +116,7 @@ export function useWorkspaces() {
         await resource.refresh();
         return outcome;
       } catch (caught: unknown) {
-        setMutationError(isIpcError(caught) ? caught : unexpectedClientError());
+        setMutationError(isIpcError(caught) ? caught : unexpectedClientError(caught));
         await resource.refresh();
         return null;
       } finally {
@@ -137,7 +137,7 @@ export function useWorkspaces() {
         await observe(request.workspaceId);
         return outcome;
       } catch (caught: unknown) {
-        setMutationError(isIpcError(caught) ? caught : unexpectedClientError());
+        setMutationError(isIpcError(caught) ? caught : unexpectedClientError(caught));
         return null;
       } finally {
         setIsMutating(false);
@@ -159,7 +159,7 @@ export function useWorkspaces() {
         await observe(workspaceId);
         return outcome;
       } catch (caught: unknown) {
-        setMutationError(isIpcError(caught) ? caught : unexpectedClientError());
+        setMutationError(isIpcError(caught) ? caught : unexpectedClientError(caught));
         return null;
       } finally {
         setIsMutating(false);
@@ -177,7 +177,7 @@ export function useWorkspaces() {
         await resource.refresh();
         return outcome;
       } catch (caught: unknown) {
-        setMutationError(isIpcError(caught) ? caught : unexpectedClientError());
+        setMutationError(isIpcError(caught) ? caught : unexpectedClientError(caught));
         await resource.refresh();
         return null;
       } finally {
@@ -199,7 +199,7 @@ export function useWorkspaces() {
         })();
         return outcome;
       } catch (caught: unknown) {
-        setMutationError(isIpcError(caught) ? caught : unexpectedClientError());
+        setMutationError(isIpcError(caught) ? caught : unexpectedClientError(caught));
         return null;
       } finally {
         setIsMutating(false);

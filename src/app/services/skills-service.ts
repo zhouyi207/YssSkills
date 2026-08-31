@@ -5,6 +5,7 @@ import {
   deleteCatalogSkillsResponseDtoSchema,
   exportCatalogSkillsResponseDtoSchema,
   importLocalSkillsResponseDtoSchema,
+  rebuildCatalogIndexResponseDtoSchema,
   scanImportFolderResponseDtoSchema,
   type CatalogSkillDetailDto,
   type CatalogSkillsResponseDto,
@@ -14,6 +15,7 @@ import {
   type ExportCatalogSkillsResponseDto,
   type ImportLocalSkillsRequestDto,
   type ImportLocalSkillsResponseDto,
+  type RebuildCatalogIndexResponseDto,
   type ScanImportFolderRequestDto,
   type ScanImportFolderResponseDto,
   type SkillIdRequestDto,
@@ -22,6 +24,10 @@ import {
 export const skillsService = {
   listCatalogSkills(): Promise<CatalogSkillsResponseDto> {
     return invokeCommand("list_catalog_skills", catalogSkillsResponseDtoSchema);
+  },
+
+  rebuildCatalogIndex(): Promise<RebuildCatalogIndexResponseDto> {
+    return invokeCommand("rebuild_catalog_index", rebuildCatalogIndexResponseDtoSchema);
   },
 
   getCatalogSkill(request: SkillIdRequestDto): Promise<CatalogSkillDetailDto> {

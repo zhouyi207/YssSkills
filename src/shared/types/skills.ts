@@ -44,9 +44,28 @@ export const catalogSkillSummaryDtoSchema = z
 
 export type CatalogSkillSummaryDto = z.infer<typeof catalogSkillSummaryDtoSchema>;
 
+export const catalogSkillIndexDiagnosticDtoSchema = z
+  .object({
+    skillId: z.string(),
+    path: pathDtoSchema,
+    kind: z.string(),
+    message: z.string(),
+  })
+  .strict();
+
+export const catalogIndexStatusDtoSchema = z
+  .object({
+    freshness: z.enum(["fresh", "revalidating", "stale"]),
+    revision: z.number().int().nonnegative(),
+    lastReconciledAtEpochMillis: z.number().int().nullable(),
+  })
+  .strict();
+
 export const catalogSkillsResponseDtoSchema = z
   .object({
     skills: z.array(catalogSkillSummaryDtoSchema),
+    diagnostics: z.array(catalogSkillIndexDiagnosticDtoSchema),
+    index: catalogIndexStatusDtoSchema,
   })
   .strict();
 
@@ -158,3 +177,16 @@ export const deleteCatalogSkillsResponseDtoSchema = z
   .strict();
 
 export type DeleteCatalogSkillsResponseDto = z.infer<typeof deleteCatalogSkillsResponseDtoSchema>;
+
+export const rebuildCatalogIndexResponseDtoSchema = z
+  .object({
+    inserted: z.number().int().nonnegative(),
+    updated: z.number().int().nonnegative(),
+    removed: z.number().int().nonnegative(),
+    unchanged: z.number().int().nonnegative(),
+    invalid: z.number().int().nonnegative(),
+    revision: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export type RebuildCatalogIndexResponseDto = z.infer<typeof rebuildCatalogIndexResponseDtoSchema>;

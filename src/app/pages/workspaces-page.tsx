@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   RiAddLine,
   RiCheckboxMultipleLine,
@@ -14,7 +14,9 @@ import { toast } from "sonner";
 import { useCatalogSkills } from "@/app/hooks/use-catalog-skills";
 import { useWorkspaces } from "@/app/hooks/use-workspaces";
 import { selectDirectory } from "@/app/services/directory-picker";
+import { formatIpcError, formatUnknownError } from "@/app/services/ipc-error-presentation";
 import { countWorkspaceReconcileIssues } from "@/app/services/workspaces-service";
+import { IpcErrorDetails } from "@/components/ipc-error-details";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -111,10 +113,7 @@ function ErrorNotice({
   return (
     <div className="px-4 py-10 text-center" role="alert" aria-live="polite">
       <p className="text-sm font-medium">{title}</p>
-      <p className="mt-1 text-sm text-muted-foreground">{error.message}</p>
-      <p className="mt-1 text-[0.65rem] text-muted-foreground">
-        Error code: <code>{error.code}</code>
-      </p>
+      <IpcErrorDetails error={error} className="mt-1" />
       {onRetry ? (
         <Button
           type="button"
@@ -392,9 +391,13 @@ function ProjectAgentDetectionList({ agents }: { agents: ReadonlyArray<ProjectAg
             <span className="min-w-0 flex-1 truncate text-xs font-medium">{agent.displayName}</span>
             <span
               className="max-w-[65%] shrink-0 truncate text-[0.65rem] text-muted-foreground"
-              title={agent.path.display}
+              title={
+                agent.error
+                  ? `${formatIpcError(agent.error)} · ${agent.path.display}`
+                  : agent.path.display
+              }
             >
-              {agent.error ? agent.error.message : `${agent.skillCount} skills`} ·{" "}
+              {agent.error ? formatIpcError(agent.error) : `${agent.skillCount} skills`} ·{" "}
               {agent.path.display}
             </span>
           </div>
@@ -407,9 +410,7 @@ function ProjectAgentDetectionList({ agents }: { agents: ReadonlyArray<ProjectAg
 function harnessToListEntry(harness: HarnessSummaryDto): WorkspaceListEntry {
   const path =
     harness.probe?.agentPath.display ??
-    (harness.error
-      ? `${harness.error.message} (${harness.error.code})`
-      : "Unavailable (probe unavailable)");
+    (harness.error ? formatIpcError(harness.error) : "Unavailable (probe unavailable)");
 
   return {
     id: harness.id,
@@ -423,7 +424,9 @@ function projectAgentToListEntry(agent: ProjectAgentDto): WorkspaceListEntry {
   return {
     id: agent.id,
     name: agent.displayName,
-    path: agent.error ? `${agent.path.display} · ${agent.error.message}` : agent.path.display,
+    path: agent.error
+      ? `${agent.path.display} · ${formatIpcError(agent.error)}`
+      : agent.path.display,
     count: agent.skillCount,
   };
 }
@@ -489,6 +492,24 @@ export function WorkspacesPage() {
   const [syncingWorkspaceId, setSyncingWorkspaceId] = useState<string | null>(null);
   const normalizedQuery = query.trim().toLowerCase();
 
+  useEffect(() => {
+    if (mutationError) {
+      toast.error(formatIpcError(mutationError));
+    }
+  }, [mutationError]);
+
+  useEffect(() => {
+    if (observationError) {
+      toast.error(formatIpcError(observationError));
+    }
+  }, [observationError]);
+
+  useEffect(() => {
+    if (overviewError) {
+      toast.error(formatIpcError(overviewError));
+    }
+  }, [overviewError]);
+
   const projectWorkspaces = useMemo(
     () => overview?.workspaces.filter(isProjectWorkspace) ?? [],
     [overview],
@@ -501,7 +522,7 @@ export function WorkspacesPage() {
           harness.probe?.agentPath.display ?? "unavailable",
           harness.probe?.detectionStatus ?? "unavailable",
           harness.skillCount,
-          harness.error?.message ?? "",
+          harness.error ? formatIpcError(harness.error) : "",
         ]),
       ),
     [normalizedQuery, overview],
@@ -532,7 +553,7 @@ export function WorkspacesPage() {
           agent.displayName,
           agent.path.display,
           agent.skillCount,
-          agent.error?.message ?? "",
+          agent.error ? formatIpcError(agent.error) : "",
         ]),
       ),
     [normalizedQuery, selectedProjectObservation],
@@ -634,7 +655,6 @@ export function WorkspacesPage() {
   const handleAddDetectedAgents = async () => {
     const outcome = await addDetectedAgents(Array.from(selectedDetectorIds));
     if (!outcome) {
-      toast.error("Unable to add the detected Agents.");
       return;
     }
     setIsAutoDetectOpen(false);
@@ -647,7 +667,6 @@ export function WorkspacesPage() {
   const handleDeleteAgents = async () => {
     const outcome = await deleteAgents(Array.from(selectedAgentIds));
     if (!outcome) {
-      toast.error("Unable to delete the selected Agents.");
       return;
     }
     setSelectedAgentIds(new Set());
@@ -666,7 +685,6 @@ export function WorkspacesPage() {
       Array.from(selectedProjectAgentIds),
     );
     if (!outcome) {
-      toast.error("Unable to delete the selected Project Agents.");
       return;
     }
     setSelectedProjectAgentIds(new Set());
@@ -753,8 +771,8 @@ export function WorkspacesPage() {
         }
         setNewAgentPath(selectedPath);
       }
-    } catch {
-      toast.error("Unable to open the agent path picker.");
+    } catch (caught: unknown) {
+      toast.error(formatUnknownError(caught, "Unable to open the agent path picker."));
     } finally {
       setIsSelectingAgentPath(false);
     }
@@ -799,7 +817,6 @@ export function WorkspacesPage() {
         skillIds: Array.from(newAgentSkillIds),
       });
       if (!copied) {
-        toast.error("Unable to copy Skills into the Project Agent.");
         return;
       }
       setIsAddProjectAgentOpen(false);
@@ -816,7 +833,6 @@ export function WorkspacesPage() {
       skillIds: Array.from(newAgentSkillIds),
     });
     if (!outcome) {
-      toast.error("Unable to save the Agent Skills.");
       return;
     }
 
@@ -830,10 +846,7 @@ export function WorkspacesPage() {
   const handleSelectProject = async (workspaceId: string) => {
     setSelectedProjectId(workspaceId);
     setSelectedProjectAgentIds(new Set());
-    const nextObservation = await observe(workspaceId);
-    if (!nextObservation) {
-      toast.error("Unable to observe the project workspace.");
-    }
+    await observe(workspaceId);
   };
 
   const handleProjectValueChange = (workspaceId: string | null) => {
@@ -867,8 +880,8 @@ export function WorkspacesPage() {
 
       setNewProjectPath(root);
       setNewProjectName((current) => (current.trim() ? current : getDirectoryName(root)));
-    } catch {
-      toast.error("Unable to open the project folder picker.");
+    } catch (caught: unknown) {
+      toast.error(formatUnknownError(caught, "Unable to open the project folder picker."));
     } finally {
       setIsSelectingProjectPath(false);
     }
@@ -885,7 +898,6 @@ export function WorkspacesPage() {
 
     const created = await createProject(name, root);
     if (!created) {
-      toast.error("Unable to add the project. See the error details on this page.");
       return;
     }
 
@@ -903,7 +915,6 @@ export function WorkspacesPage() {
     const nextOverview = await refresh();
 
     if (!nextOverview) {
-      toast.error("Unable to refresh the workspace overview.");
       return;
     }
 
@@ -938,7 +949,6 @@ export function WorkspacesPage() {
     try {
       const outcome = await reconcile(workspaceId);
       if (!outcome) {
-        toast.error("Workspace sync failed. See the error details on this page.");
         return;
       }
 
@@ -1302,10 +1312,7 @@ export function WorkspacesPage() {
                   {agentDetection.diagnostics.map((diagnostic) => (
                     <div key={diagnostic.detectorId}>
                       <p className="font-medium">{diagnostic.displayName}</p>
-                      <p className="text-muted-foreground">
-                        {diagnostic.error.message}{" "}
-                        <span className="font-mono text-[0.65rem]">({diagnostic.error.code})</span>
-                      </p>
+                      <IpcErrorDetails error={diagnostic.error} compact />
                     </div>
                   ))}
                 </div>
@@ -1316,10 +1323,7 @@ export function WorkspacesPage() {
           {mutationError ? (
             <div role="alert" className="shrink-0 border border-destructive/40 px-3 py-2">
               <p className="font-medium">Unable to add detected Agents</p>
-              <p className="text-muted-foreground">
-                {mutationError.message}{" "}
-                <span className="font-mono text-[0.65rem]">({mutationError.code})</span>
-              </p>
+              <IpcErrorDetails error={mutationError} compact />
             </div>
           ) : null}
 
@@ -1400,10 +1404,7 @@ export function WorkspacesPage() {
           {mutationError ? (
             <div role="alert" className="border border-destructive/40 px-3 py-2">
               <p className="font-medium">Unable to delete selected Agents</p>
-              <p className="text-muted-foreground">
-                {mutationError.message}{" "}
-                <span className="font-mono text-[0.65rem]">({mutationError.code})</span>
-              </p>
+              <IpcErrorDetails error={mutationError} compact />
             </div>
           ) : null}
           <DialogFooter>
@@ -1446,10 +1447,7 @@ export function WorkspacesPage() {
           {mutationError ? (
             <div role="alert" className="border border-destructive/40 px-3 py-2">
               <p className="font-medium">Unable to delete selected Project Agents</p>
-              <p className="text-muted-foreground">
-                {mutationError.message}{" "}
-                <span className="font-mono text-[0.65rem]">({mutationError.code})</span>
-              </p>
+              <IpcErrorDetails error={mutationError} compact />
             </div>
           ) : null}
           <DialogFooter>
@@ -1601,10 +1599,7 @@ export function WorkspacesPage() {
                 {mutationError ? (
                   <div role="alert" className="shrink-0 border border-destructive/40 px-3 py-2">
                     <p className="font-medium">Unable to save Agent</p>
-                    <p className="text-muted-foreground">
-                      {mutationError.message}{" "}
-                      <span className="font-mono text-[0.65rem]">({mutationError.code})</span>
-                    </p>
+                    <IpcErrorDetails error={mutationError} compact />
                   </div>
                 ) : null}
 

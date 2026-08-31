@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   RiAddLine,
   RiCheckboxMultipleLine,
@@ -14,8 +14,9 @@ import { toast } from "sonner";
 
 import { useCatalogSkills } from "@/app/hooks/use-catalog-skills";
 import { selectDirectory } from "@/app/services/directory-picker";
-import { isIpcError } from "@/app/services/ipc-client";
+import { formatIpcError, formatUnknownError } from "@/app/services/ipc-error-presentation";
 import { countWorkspaceReconcileIssues } from "@/app/services/workspaces-service";
+import { IpcErrorDetails } from "@/components/ipc-error-details";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -150,6 +151,8 @@ export function SkillsPage() {
   const {
     data,
     skills,
+    indexDiagnostics,
+    indexStatus,
     error,
     isLoading,
     isRefreshing,
@@ -159,6 +162,7 @@ export function SkillsPage() {
     isDetailLoading,
     loadDetail,
     closeDetail,
+    deleteError,
     isDeleting,
     deleteSkills,
     importError,
@@ -180,6 +184,12 @@ export function SkillsPage() {
   const [importQuery, setImportQuery] = useState("");
   const normalizedQuery = query.trim().toLowerCase();
   const normalizedImportQuery = importQuery.trim().toLowerCase();
+
+  useEffect(() => {
+    if (deleteError) {
+      toast.error(formatIpcError(deleteError));
+    }
+  }, [deleteError]);
 
   const filteredSkills = useMemo(
     () => skills.filter((skill) => skillMatchesQuery(skill, normalizedQuery)),
@@ -283,7 +293,6 @@ export function SkillsPage() {
     const requestedIds = Array.from(selectedSkillIds);
     const deletedIds = await deleteSkills(requestedIds);
     if (!deletedIds) {
-      toast.error("Unable to delete the selected skills.");
       return;
     }
 
@@ -327,7 +336,7 @@ export function SkillsPage() {
         ),
       );
     } catch (caught: unknown) {
-      toast.error(isIpcError(caught) ? caught.message : "Unable to scan the selected folder.");
+      toast.error(formatUnknownError(caught, "Unable to scan the selected folder."));
     }
   };
 
@@ -385,7 +394,7 @@ export function SkillsPage() {
         toast.success(`Imported ${importedCount} skill${importedCount === 1 ? "" : "s"}.`);
       }
     } catch (caught: unknown) {
-      toast.error(isIpcError(caught) ? caught.message : "Unable to import the selected skills.");
+      toast.error(formatUnknownError(caught, "Unable to import the selected skills."));
     }
   };
 
@@ -406,7 +415,7 @@ export function SkillsPage() {
         `Exported ${exportedCount} skill${exportedCount === 1 ? "" : "s"} to ${outcome.exportRoot.display}.`,
       );
     } catch (caught: unknown) {
-      toast.error(isIpcError(caught) ? caught.message : "Unable to export the selected skills.");
+      toast.error(formatUnknownError(caught, "Unable to export the selected skills."));
     }
   };
 
@@ -578,9 +587,7 @@ export function SkillsPage() {
               >
                 <div className="min-w-0">
                   <p className="text-sm font-medium">Unable to refresh the catalog</p>
-                  <p className="text-sm text-muted-foreground">
-                    {error.message} <span className="font-mono text-xs">({error.code})</span>
-                  </p>
+                  <IpcErrorDetails error={error} compact />
                 </div>
                 <Button
                   type="button"
@@ -595,6 +602,32 @@ export function SkillsPage() {
               </div>
             ) : null}
 
+            {indexStatus && indexStatus.freshness !== "fresh" ? (
+              <div className="mx-4 mb-4 border px-4 py-3 text-sm" role="status" aria-live="polite">
+                Showing the saved Skill index while filesystem changes are
+                {indexStatus.freshness === "revalidating"
+                  ? " checked in the background."
+                  : " waiting for background verification."}
+              </div>
+            ) : null}
+
+            {indexDiagnostics.length > 0 ? (
+              <div className="mx-4 mb-4 border px-4 py-3" role="alert">
+                <p className="text-sm font-medium">
+                  {indexDiagnostics.length} invalid Skill
+                  {indexDiagnostics.length === 1 ? " was" : "s were"} excluded
+                </p>
+                <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                  {indexDiagnostics.map((diagnostic) => (
+                    <li key={diagnostic.skillId}>
+                      <span className="font-medium text-foreground">{diagnostic.path.display}</span>
+                      {` · ${diagnostic.kind} · ${diagnostic.message}`}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
             {isLoading && !data ? (
               <div className="px-4 py-10 text-center" role="status" aria-live="polite">
                 <p className="text-sm font-medium">Loading catalog skills…</p>
@@ -602,8 +635,7 @@ export function SkillsPage() {
             ) : error && !data ? (
               <div className="px-4 py-10 text-center" role="alert">
                 <p className="text-sm font-medium">Unable to load catalog skills</p>
-                <p className="mt-1 text-sm text-muted-foreground">{error.message}</p>
-                <p className="mt-1 font-mono text-xs text-muted-foreground">{error.code}</p>
+                <IpcErrorDetails error={error} className="mt-1" />
                 <Button
                   type="button"
                   variant="outline"
@@ -776,12 +808,7 @@ export function SkillsPage() {
                             >
                               {diagnostic.path.display}
                             </p>
-                            <p className="text-muted-foreground">
-                              {diagnostic.error.message}{" "}
-                              <span className="font-mono text-[0.65rem]">
-                                ({diagnostic.error.code})
-                              </span>
-                            </p>
+                            <IpcErrorDetails error={diagnostic.error} compact />
                           </div>
                         ))}
                       </div>
@@ -793,10 +820,7 @@ export function SkillsPage() {
               {importError ? (
                 <div role="alert" className="mt-4 border border-destructive/40 px-3 py-2">
                   <p className="font-medium">Unable to import the selected skills</p>
-                  <p className="text-muted-foreground">
-                    {importError.message}{" "}
-                    <span className="font-mono text-[0.65rem]">({importError.code})</span>
-                  </p>
+                  <IpcErrorDetails error={importError} compact />
                 </div>
               ) : null}
 
@@ -888,10 +912,7 @@ export function SkillsPage() {
                   className="flex min-h-0 flex-1 flex-col items-center justify-center py-10 text-center"
                 >
                   <p className="text-sm font-medium">Unable to load skill details</p>
-                  <p className="mt-1 max-w-xl text-sm text-muted-foreground">
-                    {detailError.message}
-                  </p>
-                  <p className="mt-1 font-mono text-xs text-muted-foreground">{detailError.code}</p>
+                  <IpcErrorDetails error={detailError} className="mt-1 max-w-xl" />
                   <Button
                     type="button"
                     variant="outline"

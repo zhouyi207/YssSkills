@@ -21,7 +21,7 @@ export function useAppSettings() {
         await resource.refresh();
         return settings;
       } catch (caught: unknown) {
-        setUpdateError(isIpcError(caught) ? caught : unexpectedClientError());
+        setUpdateError(isIpcError(caught) ? caught : unexpectedClientError(caught));
         return null;
       } finally {
         setIsUpdating(false);

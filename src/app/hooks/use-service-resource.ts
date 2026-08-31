@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { isIpcError } from "@/app/services/ipc-client";
+import { getUnknownErrorReason, isIpcError } from "@/app/services/ipc-client";
 import type { IpcError } from "@/shared/types/ipc";
 
 export type ServiceResource<T> = {
@@ -11,11 +11,13 @@ export type ServiceResource<T> = {
   refresh: () => Promise<T | null>;
 };
 
-export function unexpectedClientError(): IpcError {
+export function unexpectedClientError(cause?: unknown): IpcError {
+  const reason = getUnknownErrorReason(cause);
   return {
     code: "ui.unexpected_error",
     message: "An unexpected application error occurred.",
     retryable: false,
+    ...(reason ? { context: { reason } } : {}),
   };
 }
 
@@ -48,7 +50,7 @@ export function useServiceResource<T>(loader: () => Promise<T>): ServiceResource
       if (requestId.current !== currentRequest) {
         return null;
       }
-      setError(isIpcError(caught) ? caught : unexpectedClientError());
+      setError(isIpcError(caught) ? caught : unexpectedClientError(caught));
       return null;
     } finally {
       if (requestId.current === currentRequest) {
