@@ -3,7 +3,7 @@ use std::{
     ffi::OsStr,
     fmt, fs, io,
     path::{Path, PathBuf},
-    time::SystemTime,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use sha2::{Digest, Sha256};
@@ -290,6 +290,42 @@ pub struct ScannedSkill {
     pub content_hash: ContentHash,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FilesystemFingerprint([u8; 32]);
+
+impl FilesystemFingerprint {
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillFilesystemStamp {
+    pub path: PathBuf,
+    pub normalized_path: PathBuf,
+    pub marker: SkillMarker,
+    pub marker_path: PathBuf,
+    pub marker_modified_at: Option<SystemTime>,
+    pub marker_file_size: u64,
+    pub fingerprint: FilesystemFingerprint,
+}
+
+#[derive(Debug)]
+pub struct SkillInspectionDiagnostic {
+    pub path: PathBuf,
+    pub error: LocalError,
+}
+
+#[derive(Debug)]
+pub struct SkillInspectionReport {
+    pub skills: Vec<SkillFilesystemStamp>,
+    pub diagnostics: Vec<SkillInspectionDiagnostic>,
+}
+
 #[derive(Debug)]
 pub struct ScanDiagnostic {
     pub path: PathBuf,
@@ -365,6 +401,68 @@ pub fn read_skill(path: &Path) -> Result<ScannedSkill, LocalError> {
     })
 }
 
+pub fn inspect_skill_filesystem(path: &Path) -> Result<SkillFilesystemStamp, LocalError> {
+    let Some((marker, marker_path)) = find_skill_marker(path)? else {
+        return Err(LocalError::MarkerNotFound {
+            path: path.to_path_buf(),
+        });
+    };
+    let marker_metadata =
+        fs::metadata(&marker_path).map_err(|source| map_io_error(&marker_path, source))?;
+    let marker_modified_at = marker_metadata.modified().ok();
+    let normalized_path = fs::canonicalize(path).map_err(|source| map_io_error(path, source))?;
+    let fingerprint = filesystem_fingerprint(path)?;
+
+    Ok(SkillFilesystemStamp {
+        path: path.to_path_buf(),
+        normalized_path,
+        marker,
+        marker_path,
+        marker_modified_at,
+        marker_file_size: marker_metadata.len(),
+        fingerprint,
+    })
+}
+
+pub fn inspect_flat_skill_directory(root: &Path) -> Result<SkillInspectionReport, LocalError> {
+    ensure_directory(root)?;
+    let entries = fs::read_dir(root).map_err(|source| map_io_error(root, source))?;
+    let mut skills = Vec::new();
+    let mut diagnostics = Vec::new();
+
+    for entry in entries {
+        let entry = entry.map_err(|source| map_io_error(root, source))?;
+        let path = entry.path();
+        match entry_directory_target(&entry) {
+            Ok(Some(_)) => {}
+            Ok(None) => continue,
+            Err(error) => {
+                diagnostics.push(SkillInspectionDiagnostic { path, error });
+                continue;
+            }
+        }
+        match find_skill_marker(&path) {
+            Ok(Some(_)) => {}
+            Ok(None) => continue,
+            Err(error) => {
+                diagnostics.push(SkillInspectionDiagnostic { path, error });
+                continue;
+            }
+        }
+        match inspect_skill_filesystem(&path) {
+            Ok(skill) => skills.push(skill),
+            Err(error) => diagnostics.push(SkillInspectionDiagnostic { path, error }),
+        }
+    }
+
+    skills.sort_by(|left, right| left.path.cmp(&right.path));
+    diagnostics.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(SkillInspectionReport {
+        skills,
+        diagnostics,
+    })
+}
+
 pub fn scan_directory(root: &Path, mode: ScanMode) -> Result<ScanReport, LocalError> {
     ensure_directory(root)?;
 
@@ -394,6 +492,74 @@ pub fn scan_directory(root: &Path, mode: ScanMode) -> Result<ScanReport, LocalEr
 fn update_hash_field(hasher: &mut Sha256, bytes: &[u8]) {
     hasher.update((bytes.len() as u64).to_le_bytes());
     hasher.update(bytes);
+}
+
+fn update_hash_time(hasher: &mut Sha256, value: SystemTime) {
+    match value.duration_since(UNIX_EPOCH) {
+        Ok(duration) => {
+            update_hash_field(hasher, &[1]);
+            update_hash_field(hasher, &duration.as_secs().to_le_bytes());
+            update_hash_field(hasher, &duration.subsec_nanos().to_le_bytes());
+        }
+        Err(error) => {
+            let duration = error.duration();
+            update_hash_field(hasher, &[0]);
+            update_hash_field(hasher, &duration.as_secs().to_le_bytes());
+            update_hash_field(hasher, &duration.subsec_nanos().to_le_bytes());
+        }
+    }
+}
+
+fn filesystem_fingerprint(path: &Path) -> Result<FilesystemFingerprint, LocalError> {
+    ensure_directory(path)?;
+    let root = fs::canonicalize(path).map_err(|source| map_io_error(path, source))?;
+    let mut files = Vec::new();
+
+    let entries = WalkDir::new(&root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| !hash_entry_is_ignored(entry));
+    for entry in entries {
+        let entry = entry.map_err(|source| {
+            let error_path = source
+                .path()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| root.clone());
+            LocalError::Walk {
+                path: error_path,
+                source,
+            }
+        })?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        let relative_path = relative_path_bytes(&root, entry.path())?;
+        files.push((relative_path, entry.into_path()));
+    }
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut hasher = Sha256::new();
+    for (relative_path, file_path) in files {
+        let metadata =
+            fs::metadata(&file_path).map_err(|source| map_io_error(&file_path, source))?;
+        update_hash_field(&mut hasher, &relative_path);
+        update_hash_field(&mut hasher, &metadata.len().to_le_bytes());
+        let modified = metadata
+            .modified()
+            .map_err(|source| map_io_error(&file_path, source))?;
+        update_hash_time(&mut hasher, modified);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = metadata.permissions().mode() & 0o111;
+            update_hash_field(&mut hasher, &mode.to_le_bytes());
+        }
+    }
+
+    Ok(FilesystemFingerprint::from_bytes(hasher.finalize().into()))
 }
 
 pub fn hash_directory(path: &Path) -> Result<ContentHash, LocalError> {
