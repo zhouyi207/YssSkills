@@ -4,6 +4,7 @@ members = [
   ".",
   "crates/skill-core",
   "crates/skill-harness",
+  "crates/skill-index",
   "crates/skill-local",
   "crates/skill-registry",
   "crates/skill-workspace",
@@ -35,6 +36,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 skill-core = { path = "crates/skill-core" }
 skill-harness = { path = "crates/skill-harness" }
+skill-index = { path = "crates/skill-index" }
 skill-local = { path = "crates/skill-local" }
 skill-registry = { path = "crates/skill-registry" }
 skill-workspace = { path = "crates/skill-workspace" }

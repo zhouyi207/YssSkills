@@ -3758,6 +3758,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "skill-index"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "skill-core",
+ "skill-local",
+ "tempfile",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "skill-local"
 version = "0.1.0"
 dependencies = [
@@ -5682,6 +5693,7 @@ dependencies = [
  "serde_json",
  "skill-core",
  "skill-harness",
+ "skill-index",
  "skill-local",
  "skill-registry",
  "skill-workspace",
