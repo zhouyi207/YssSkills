@@ -31,23 +31,10 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import type {
-  CatalogSkillSummaryDto,
-  ScanImportFolderResponseDto,
-  SkillSourceDto,
-} from "@/shared/types/skills";
+import type { CatalogSkillSummaryDto, ScanImportFolderResponseDto } from "@/shared/types/skills";
 
-function formatSkillSource(source: SkillSourceDto) {
-  switch (source.kind) {
-    case "local":
-      return `Local · ${source.path.display}`;
-    case "registry":
-      return `Registry · ${source.registry}/${source.skill}${source.version ? ` @ ${source.version}` : ""}`;
-    case "git":
-      return `Git · ${source.url}${source.revision ? ` @ ${source.revision}` : ""}${
-        source.subdirectory ? ` · ${source.subdirectory.display}` : ""
-      }`;
-  }
+function formatSkillSource(skill: CatalogSkillSummaryDto) {
+  return skill.sourceMetadata?.source ?? "";
 }
 
 function skillMatchesQuery(skill: CatalogSkillSummaryDto, normalizedQuery: string) {
@@ -59,7 +46,7 @@ function skillMatchesQuery(skill: CatalogSkillSummaryDto, normalizedQuery: strin
     skill.name,
     skill.description,
     skill.version ?? "",
-    formatSkillSource(skill.source),
+    formatSkillSource(skill),
     skill.location.display,
   ]
     .join(" ")
@@ -120,9 +107,9 @@ function SkillList({
               <span className="min-w-0 truncate font-medium">{skill.name}</span>
               <span
                 className="max-w-32 shrink-0 truncate text-[0.65rem] text-muted-foreground"
-                title={formatSkillSource(skill.source)}
+                title={formatSkillSource(skill)}
               >
-                {formatSkillSource(skill.source)}
+                {formatSkillSource(skill)}
               </span>
             </div>
             <div className="min-w-0 truncate text-muted-foreground">{skill.description}</div>

@@ -3,6 +3,7 @@ use std::{path::Path, time::UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use skill_core::{InstalledSkill, SkillMarker, SkillSource};
 use skill_harness::{DetectionStatus, HarnessCapabilities, HarnessCategory};
+use skill_index::SkillLockEntry;
 use skill_local::ScanMode;
 use skill_registry::{Leaderboard, LeaderboardResult, RemoteSkillSummary, SearchResult};
 use skill_workspace::{
@@ -157,9 +158,41 @@ pub struct CatalogSkillSummaryDto {
     pub description: String,
     pub version: Option<String>,
     pub source: SkillSourceDto,
+    pub source_metadata: Option<SkillSourceMetadataDto>,
     pub location: PathDto,
     pub updated_at_epoch_millis: Option<i64>,
     pub deployment_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSourceMetadataDto {
+    pub source: Option<String>,
+    pub source_type: Option<String>,
+    pub source_url: Option<String>,
+    pub skill_path: Option<String>,
+    pub skill_folder_hash: Option<String>,
+    pub plugin_name: Option<String>,
+    #[serde(rename = "ref")]
+    pub reference: Option<String>,
+    pub installed_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+impl From<SkillLockEntry> for SkillSourceMetadataDto {
+    fn from(value: SkillLockEntry) -> Self {
+        Self {
+            source: value.source,
+            source_type: value.source_type,
+            source_url: value.source_url,
+            skill_path: value.skill_path,
+            skill_folder_hash: value.skill_folder_hash,
+            plugin_name: value.plugin_name,
+            reference: value.reference,
+            installed_at: value.installed_at,
+            updated_at: value.updated_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -247,7 +280,11 @@ pub enum SkillSourceDto {
 
 impl From<CatalogSkillSummary> for CatalogSkillSummaryDto {
     fn from(value: CatalogSkillSummary) -> Self {
-        catalog_skill_summary(value.snapshot, value.deployment_count)
+        catalog_skill_summary(
+            value.snapshot,
+            value.deployment_count,
+            value.source_metadata,
+        )
     }
 }
 
@@ -369,6 +406,7 @@ impl From<ExportSkillsOutcome> for ExportCatalogSkillsResponseDto {
 fn catalog_skill_summary(
     snapshot: CentralSkillSnapshot,
     deployment_count: usize,
+    source_metadata: Option<SkillLockEntry>,
 ) -> CatalogSkillSummaryDto {
     let installed = snapshot.installed;
     CatalogSkillSummaryDto {
@@ -377,6 +415,7 @@ fn catalog_skill_summary(
         description: installed.metadata.description().to_owned(),
         version: installed.metadata.version().map(ToOwned::to_owned),
         source: installed.source.into(),
+        source_metadata: source_metadata.map(Into::into),
         location: PathDto::from(installed.location.as_path()),
         updated_at_epoch_millis: snapshot
             .version

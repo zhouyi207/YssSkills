@@ -6,7 +6,7 @@ use std::{
 
 use rusqlite::Connection;
 use skill_core::SkillId;
-use skill_index::{IndexState, SkillIndex};
+use skill_index::{IndexState, SkillIndex, SkillLock};
 use tempfile::tempdir;
 
 fn write_skill(path: &Path, name: &str, body: &str) {
@@ -41,6 +41,57 @@ fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut value = path.as_os_str().to_os_string();
     value.push(suffix);
     PathBuf::from(value)
+}
+
+#[test]
+fn skill_lock_metadata_is_loaded_by_catalog_directory_name() {
+    let root = tempdir().unwrap();
+    let lock_path = root.path().join(".agents/.skill-lock.json");
+    fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+    fs::write(
+        &lock_path,
+        r#"{
+          "version": 3,
+          "skills": {
+            "brainstorming": {
+              "source": "obra/superpowers",
+              "sourceType": "github",
+              "sourceUrl": "https://github.com/obra/superpowers.git",
+              "skillPath": "skills/brainstorming/SKILL.md",
+              "skillFolderHash": "881fc4ac82a25e61a58d332426b5673efe060da0",
+              "pluginName": "superpowers",
+              "ref": "main",
+              "installedAt": "2026-07-23T08:25:53.636Z",
+              "updatedAt": "2026-08-31T05:57:34.009Z"
+            }
+          }
+        }"#,
+    )
+    .unwrap();
+
+    let lock = SkillLock::read(&lock_path).unwrap();
+    let metadata = lock.skill("brainstorming").unwrap();
+
+    assert_eq!(metadata.source.as_deref(), Some("obra/superpowers"));
+    assert_eq!(metadata.source_type.as_deref(), Some("github"));
+    assert_eq!(
+        metadata.source_url.as_deref(),
+        Some("https://github.com/obra/superpowers.git")
+    );
+    assert_eq!(
+        metadata.skill_path.as_deref(),
+        Some("skills/brainstorming/SKILL.md")
+    );
+    assert_eq!(metadata.reference.as_deref(), Some("main"));
+    assert!(lock.skill("not-installed").is_none());
+}
+
+#[test]
+fn missing_skill_lock_is_an_empty_metadata_source() {
+    let root = tempdir().unwrap();
+    let lock = SkillLock::read(&root.path().join("missing.json")).unwrap();
+
+    assert!(lock.skill("brainstorming").is_none());
 }
 
 #[test]

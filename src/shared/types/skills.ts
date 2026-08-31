@@ -29,6 +29,22 @@ export const skillSourceDtoSchema = z.discriminatedUnion("kind", [
 
 export type SkillSourceDto = z.infer<typeof skillSourceDtoSchema>;
 
+export const skillSourceMetadataDtoSchema = z
+  .object({
+    source: z.string().nullable(),
+    sourceType: z.string().nullable(),
+    sourceUrl: z.string().nullable(),
+    skillPath: z.string().nullable(),
+    skillFolderHash: z.string().nullable(),
+    pluginName: z.string().nullable(),
+    ref: z.string().nullable(),
+    installedAt: z.string().nullable(),
+    updatedAt: z.string().nullable(),
+  })
+  .strict();
+
+export type SkillSourceMetadataDto = z.infer<typeof skillSourceMetadataDtoSchema>;
+
 export const catalogSkillSummaryDtoSchema = z
   .object({
     id: z.string(),
@@ -36,6 +52,7 @@ export const catalogSkillSummaryDtoSchema = z
     description: z.string(),
     version: z.string().nullable(),
     source: skillSourceDtoSchema,
+    sourceMetadata: skillSourceMetadataDtoSchema.nullable(),
     location: pathDtoSchema,
     updatedAtEpochMillis: z.number().int().nullable(),
     deploymentCount: z.number().int().nonnegative(),

@@ -20,6 +20,10 @@ use skill_local::{
 };
 use thiserror::Error;
 
+mod skill_lock;
+
+pub use skill_lock::{SkillLock, SkillLockEntry, SkillLockError};
+
 const APPLICATION_ID: i64 = 0x5953_5349;
 const SCHEMA_VERSION: i64 = 1;
 const PARSE_VERSION: i64 = 1;

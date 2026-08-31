@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, time::UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use skill_harness::HarnessError;
-use skill_index::IndexError;
+use skill_index::{IndexError, SkillLockError};
 use skill_local::LocalError;
 use skill_registry::{RegistryError, RetryAfter};
 use skill_workspace::{CatalogFailure, WorkspaceError};
@@ -102,6 +102,7 @@ impl From<ApplicationError> for IpcError {
             ApplicationError::Local(error) => error.into(),
             ApplicationError::Catalog(error) => error.into(),
             ApplicationError::AgentConfig(error) => error.into(),
+            ApplicationError::SkillLock(error) => error.into(),
             ApplicationError::InvalidRequest { field, reason } => {
                 Self::new("request.invalid", "One or more request fields are invalid.")
                     .with_context("field", field)
@@ -121,6 +122,26 @@ impl From<ApplicationError> for IpcError {
                 "Workspace content changed while synchronization was being prepared.",
             )
             .retryable(),
+        }
+    }
+}
+
+impl From<SkillLockError> for IpcError {
+    fn from(error: SkillLockError) -> Self {
+        match error {
+            SkillLockError::Io { path, source } => Self::new(
+                "skill_metadata.lock_read_failed",
+                "The Skill source metadata could not be read.",
+            )
+            .with_context("path", path.display())
+            .with_context("reason", source)
+            .retryable(),
+            SkillLockError::Decode { path, source } => Self::new(
+                "skill_metadata.lock_invalid",
+                "The Skill source metadata file is invalid.",
+            )
+            .with_context("path", path.display())
+            .with_context("reason", source),
         }
     }
 }

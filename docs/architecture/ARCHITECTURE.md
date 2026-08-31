@@ -312,6 +312,13 @@ content hash、marker mtime/size、filesystem fingerprint、indexed time、有�
 version 全部是 filesystem SSOT 的派生数据。有效与无效 Skill 分行保存；单个解析失败形成
 diagnostic 并从有效列表排除，不使整个索引不可用。
 
+Catalog projection 每次读取用户 HOME 下的 `.agents/.skill-lock.json`，按中央 Skill 的目录名
+关联 source metadata。锁文件仍是这部分元数据的唯一事实源，不写入派生 SQLite；匹配项的
+`source`、`sourceType`、`sourceUrl`、`skillPath`、folder hash、ref、plugin 与安装/更新时间
+通过显式 IPC DTO 返回，未匹配项为 `null`。Skills 列表副标题只显示 lock entry 的 `source`，
+不再把中央 catalog 路径伪装成来源；锁文件不存在等价于空 metadata source，其他读取或解析
+失败保持 typed error。
+
 reconcile 先读取上次 stamp，只对新增或 stamp 变化的 Skill 执行 `read_skill`、frontmatter parse
 和完整目录 hash；未变化记录跳过。扫描与昂贵读取发生在事务外，最终 INSERT/UPDATE/DELETE
 和索引 revision 使用单个 SQLite transaction 原子提交。并发写通过 revision compare-and-swap
@@ -709,6 +716,7 @@ Project Tab 的 Auto Detect 复用该检查并只展示当前 Project 结果；�
 Select all，Delete 清空所选 Project Agent 的 Skills 并清理对应 bindings，保留 Project
 Workspace 以及其他项目文件。
 Skills 页首次加载只读取 catalog；
+列表中的来源副标题来自 `.agents/.skill-lock.json` 的匹配 `source`，没有匹配 metadata 时留空；
 用户点击 Refresh 时，hook 通过 Workspace service 取得 Agents Workspace ID、显式调用
 reconcile；reconcile 在扫描前只删除各 Agent skills 根一级目录中目标已不存在的
 Junction/SymbolicLink，再重新读取 catalog，因此会把发现的 Agent Skill 导入中央库，并

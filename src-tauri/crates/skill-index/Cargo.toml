@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 skill-core = { path = "../skill-core" }
 skill-local = { path = "../skill-local" }
 thiserror = "2"

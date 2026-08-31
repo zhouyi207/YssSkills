@@ -12,7 +12,7 @@ use skill_harness::{
     DetectionStatus, HarnessAdapter, HarnessCapabilities, HarnessCategory, HarnessEnvironment,
     HarnessError, HarnessId, HarnessRegistry,
 };
-use skill_index::IndexState;
+use skill_index::{IndexState, SkillLock, SkillLockEntry, SkillLockError};
 use skill_local::{
     copy_skill, link_skill, link_target, ExistingDestination, LocalError, ScanDiagnostic, ScanMode,
     ScanReport,
@@ -60,6 +60,8 @@ pub enum ApplicationError {
     Catalog(#[from] CatalogFailure),
     #[error(transparent)]
     AgentConfig(#[from] AgentConfigError),
+    #[error(transparent)]
+    SkillLock(#[from] SkillLockError),
     #[error("invalid request field {field}: {reason}")]
     InvalidRequest {
         field: &'static str,
@@ -105,6 +107,7 @@ pub struct ApplicationDiagnostic {
 pub struct CatalogSkillSummary {
     pub snapshot: CentralSkillSnapshot,
     pub deployment_count: usize,
+    pub source_metadata: Option<SkillLockEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -793,15 +796,20 @@ impl Application {
             *deployment_counts.entry(binding.key.skill_id).or_default() += 1;
         }
         let view = self.catalog.catalog_index_view()?;
+        let skill_lock = self.skill_lock()?;
         let skills = view
             .skills
             .into_iter()
-            .map(|snapshot| CatalogSkillSummary {
-                deployment_count: deployment_counts
-                    .get(&snapshot.installed.id)
-                    .copied()
-                    .unwrap_or_default(),
-                snapshot,
+            .map(|snapshot| {
+                let source_metadata = source_metadata_for_snapshot(&skill_lock, &snapshot);
+                CatalogSkillSummary {
+                    deployment_count: deployment_counts
+                        .get(&snapshot.installed.id)
+                        .copied()
+                        .unwrap_or_default(),
+                    snapshot,
+                    source_metadata,
+                }
             })
             .collect();
         let diagnostics = view
@@ -851,6 +859,7 @@ impl Application {
         let skill_id = SkillId::parse(raw_skill_id).map_err(ApplicationError::InvalidSkillId)?;
         let bindings = self.catalog.all_bindings()?;
         let (snapshot, scanned) = self.catalog.catalog_skill(skill_id)?;
+        let source_metadata = source_metadata_for_snapshot(&self.skill_lock()?, &snapshot);
         Ok(CatalogSkillDetail {
             summary: CatalogSkillSummary {
                 deployment_count: bindings
@@ -858,9 +867,20 @@ impl Application {
                     .filter(|binding| binding.key.skill_id == skill_id)
                     .count(),
                 snapshot,
+                source_metadata,
             },
             body: scanned.document.body().to_owned(),
         })
+    }
+
+    fn skill_lock(&self) -> Result<SkillLock, SkillLockError> {
+        SkillLock::read(
+            &self
+                .environment
+                .home_dir()
+                .join(".agents")
+                .join(".skill-lock.json"),
+        )
     }
 
     pub fn scan_import_folder(
@@ -2062,6 +2082,19 @@ impl Application {
     }
 }
 
+fn source_metadata_for_snapshot(
+    skill_lock: &SkillLock,
+    snapshot: &CentralSkillSnapshot,
+) -> Option<SkillLockEntry> {
+    snapshot
+        .installed
+        .location
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| skill_lock.skill(name))
+        .cloned()
+}
+
 fn merge_reconcile_reports(current: &mut ReconcileReport, mut next: ReconcileReport) {
     current.imported.append(&mut next.imported);
     sort_dedup_skill_ids(&mut current.imported);
@@ -2284,6 +2317,51 @@ mod tests {
                 deployment_mode: DeploymentMode::Copy,
             })
             .unwrap()
+    }
+
+    #[test]
+    fn catalog_projection_enriches_skills_from_the_agents_lock_file() {
+        let root = tempdir().unwrap();
+        let lock_path = root.path().join("home/.agents/.skill-lock.json");
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        fs::write(
+            &lock_path,
+            r#"{
+              "version": 3,
+              "skills": {
+                "brainstorming": {
+                  "source": "obra/superpowers",
+                  "sourceType": "github",
+                  "sourceUrl": "https://github.com/obra/superpowers.git",
+                  "skillPath": "skills/brainstorming/SKILL.md",
+                  "skillFolderHash": "folder-hash",
+                  "installedAt": "2026-07-23T08:25:53.636Z",
+                  "updatedAt": "2026-08-31T05:57:34.009Z"
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        let mut application = test_application(root.path());
+        write_test_skill(
+            &application
+                .catalog
+                .catalog_root()
+                .join("skills/brainstorming"),
+            "Brainstorming",
+        );
+        application.rebuild_catalog_index().unwrap();
+
+        let skills = application.list_catalog_skills_view().unwrap().skills;
+
+        assert_eq!(skills.len(), 1);
+        let metadata = skills[0].source_metadata.as_ref().unwrap();
+        assert_eq!(metadata.source.as_deref(), Some("obra/superpowers"));
+        assert_eq!(metadata.source_type.as_deref(), Some("github"));
+        assert_eq!(
+            metadata.source_url.as_deref(),
+            Some("https://github.com/obra/superpowers.git")
+        );
     }
 
     fn associate_test_skill(
