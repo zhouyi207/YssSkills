@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { pathDtoSchema } from "./ipc";
+import { ipcErrorSchema, pathDtoSchema } from "./ipc";
 
 export const skillSourceDtoSchema = z.discriminatedUnion("kind", [
   z
@@ -61,6 +61,80 @@ export const catalogSkillDetailDtoSchema = z
 
 export type CatalogSkillDetailDto = z.infer<typeof catalogSkillDetailDtoSchema>;
 
+export const scanImportFolderRequestDtoSchema = z
+  .object({
+    root: z.string().min(1),
+  })
+  .strict();
+
+export type ScanImportFolderRequestDto = z.infer<typeof scanImportFolderRequestDtoSchema>;
+
+export const importCandidateDtoSchema = z
+  .object({
+    path: pathDtoSchema,
+    name: z.string(),
+    description: z.string(),
+    version: z.string().nullable(),
+  })
+  .strict();
+
+export type ImportCandidateDto = z.infer<typeof importCandidateDtoSchema>;
+
+export const importFolderDiagnosticDtoSchema = z
+  .object({
+    path: pathDtoSchema,
+    error: ipcErrorSchema,
+  })
+  .strict();
+
+export type ImportFolderDiagnosticDto = z.infer<typeof importFolderDiagnosticDtoSchema>;
+
+export const scanImportFolderResponseDtoSchema = z
+  .object({
+    root: pathDtoSchema,
+    candidates: z.array(importCandidateDtoSchema),
+    diagnostics: z.array(importFolderDiagnosticDtoSchema),
+  })
+  .strict();
+
+export type ScanImportFolderResponseDto = z.infer<typeof scanImportFolderResponseDtoSchema>;
+
+export const importLocalSkillsRequestDtoSchema = z
+  .object({
+    root: z.string().min(1),
+    paths: z.array(z.string().min(1)).min(1),
+  })
+  .strict();
+
+export type ImportLocalSkillsRequestDto = z.infer<typeof importLocalSkillsRequestDtoSchema>;
+
+export const importLocalSkillsResponseDtoSchema = z
+  .object({
+    importedSkillIds: z.array(z.string()),
+    skippedPaths: z.array(pathDtoSchema),
+  })
+  .strict();
+
+export type ImportLocalSkillsResponseDto = z.infer<typeof importLocalSkillsResponseDtoSchema>;
+
+export const exportCatalogSkillsRequestDtoSchema = z
+  .object({
+    destinationRoot: z.string().min(1),
+    skillIds: z.array(z.string()).min(1),
+  })
+  .strict();
+
+export type ExportCatalogSkillsRequestDto = z.infer<typeof exportCatalogSkillsRequestDtoSchema>;
+
+export const exportCatalogSkillsResponseDtoSchema = z
+  .object({
+    exportRoot: pathDtoSchema,
+    exportedSkillIds: z.array(z.string()),
+  })
+  .strict();
+
+export type ExportCatalogSkillsResponseDto = z.infer<typeof exportCatalogSkillsResponseDtoSchema>;
+
 export const skillIdRequestDtoSchema = z
   .object({
     skillId: z.string(),
@@ -68,3 +142,19 @@ export const skillIdRequestDtoSchema = z
   .strict();
 
 export type SkillIdRequestDto = z.infer<typeof skillIdRequestDtoSchema>;
+
+export const deleteCatalogSkillsRequestDtoSchema = z
+  .object({
+    skillIds: z.array(z.string()).min(1),
+  })
+  .strict();
+
+export type DeleteCatalogSkillsRequestDto = z.infer<typeof deleteCatalogSkillsRequestDtoSchema>;
+
+export const deleteCatalogSkillsResponseDtoSchema = z
+  .object({
+    deletedSkillIds: z.array(z.string()),
+  })
+  .strict();
+
+export type DeleteCatalogSkillsResponseDto = z.infer<typeof deleteCatalogSkillsResponseDtoSchema>;

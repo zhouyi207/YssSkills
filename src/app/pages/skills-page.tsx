@@ -10,8 +10,12 @@ import {
   RiUploadLine,
 } from "@remixicon/react";
 import ReactMarkdown from "react-markdown";
+import { toast } from "sonner";
 
 import { useCatalogSkills } from "@/app/hooks/use-catalog-skills";
+import { selectDirectory } from "@/app/services/directory-picker";
+import { isIpcError } from "@/app/services/ipc-client";
+import { countWorkspaceReconcileIssues } from "@/app/services/workspaces-service";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -26,7 +30,11 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import type { CatalogSkillSummaryDto, SkillSourceDto } from "@/shared/types/skills";
+import type {
+  CatalogSkillSummaryDto,
+  ScanImportFolderResponseDto,
+  SkillSourceDto,
+} from "@/shared/types/skills";
 
 function formatSkillSource(source: SkillSourceDto) {
   switch (source.kind) {
@@ -151,12 +159,27 @@ export function SkillsPage() {
     isDetailLoading,
     loadDetail,
     closeDetail,
+    isDeleting,
+    deleteSkills,
+    importError,
+    isScanningImport,
+    isImporting,
+    scanImportFolder,
+    importLocalSkills,
+    clearImportError,
+    isExporting,
+    exportCatalogSkills,
   } = useCatalogSkills();
   const [query, setQuery] = useState("");
   const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(() => new Set());
   const [activeTab, setActiveTab] = useState<"item" | "set">("item");
   const [viewingSkillId, setViewingSkillId] = useState<string | null>(null);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [importPreview, setImportPreview] = useState<ScanImportFolderResponseDto | null>(null);
+  const [selectedImportPaths, setSelectedImportPaths] = useState<Set<string>>(() => new Set());
+  const [importQuery, setImportQuery] = useState("");
   const normalizedQuery = query.trim().toLowerCase();
+  const normalizedImportQuery = importQuery.trim().toLowerCase();
 
   const filteredSkills = useMemo(
     () => skills.filter((skill) => skillMatchesQuery(skill, normalizedQuery)),
@@ -167,6 +190,28 @@ export function SkillsPage() {
     visibleSkillIds.length > 0 && visibleSkillIds.every((skillId) => selectedSkillIds.has(skillId));
   const viewingSkill = skills.find((skill) => skill.id === viewingSkillId) ?? null;
   const visibleDetail = detail?.skill.id === viewingSkillId ? detail : null;
+  const filteredImportCandidates = useMemo(() => {
+    if (!importPreview || !normalizedImportQuery) {
+      return importPreview?.candidates ?? [];
+    }
+
+    return importPreview.candidates.filter((candidate) =>
+      [candidate.name, candidate.description, candidate.version ?? "", candidate.path.display]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedImportQuery),
+    );
+  }, [importPreview, normalizedImportQuery]);
+  const selectableImportPaths = useMemo(
+    () =>
+      filteredImportCandidates.flatMap((candidate) =>
+        candidate.path.value ? [candidate.path.value] : [],
+      ),
+    [filteredImportCandidates],
+  );
+  const allImportCandidatesSelected =
+    selectableImportPaths.length > 0 &&
+    selectableImportPaths.every((path) => selectedImportPaths.has(path));
 
   const toggleSelection = (skillId: string, checked?: boolean) => {
     setSelectedSkillIds((current) => {
@@ -205,8 +250,23 @@ export function SkillsPage() {
     });
   };
 
-  const handleRefresh = () => {
-    void refresh();
+  const handleRefresh = async () => {
+    const outcome = await refresh();
+    if (!outcome) {
+      return;
+    }
+
+    const importedCount = outcome.requested.imported.length;
+    const issueCount = countWorkspaceReconcileIssues(outcome);
+    if (issueCount > 0) {
+      toast.warning(
+        `Agent skills refreshed with ${issueCount} diagnostic${issueCount === 1 ? "" : "s"}; imported ${importedCount} new skill${importedCount === 1 ? "" : "s"}.`,
+      );
+    } else {
+      toast.success(
+        `Agent skills refreshed; imported ${importedCount} new skill${importedCount === 1 ? "" : "s"}.`,
+      );
+    }
   };
 
   const handleView = (skillId: string) => {
@@ -217,6 +277,137 @@ export function SkillsPage() {
   const handleCloseDetail = () => {
     setViewingSkillId(null);
     closeDetail();
+  };
+
+  const handleDelete = async () => {
+    const requestedIds = Array.from(selectedSkillIds);
+    const deletedIds = await deleteSkills(requestedIds);
+    if (!deletedIds) {
+      toast.error("Unable to delete the selected skills.");
+      return;
+    }
+
+    const deletedSet = new Set(deletedIds);
+    setSelectedSkillIds((current) => {
+      const next = new Set(current);
+      deletedSet.forEach((skillId) => next.delete(skillId));
+      return next;
+    });
+    if (viewingSkillId && deletedSet.has(viewingSkillId)) {
+      handleCloseDetail();
+    }
+    setIsDeleteDialogOpen(false);
+    toast.success(
+      `Deleted ${deletedIds.length} skill${deletedIds.length === 1 ? "" : "s"} from the catalog and Agent directories.`,
+    );
+  };
+
+  const closeImportDialog = () => {
+    setImportPreview(null);
+    setSelectedImportPaths(new Set());
+    setImportQuery("");
+    clearImportError();
+  };
+
+  const handleChooseImportFolder = async () => {
+    clearImportError();
+    try {
+      const root = await selectDirectory("Select a folder containing skills");
+      if (!root) {
+        return;
+      }
+
+      const preview = await scanImportFolder(root);
+      setImportPreview(preview);
+      setSelectedImportPaths(
+        new Set(
+          preview.candidates.flatMap((candidate) =>
+            candidate.path.value ? [candidate.path.value] : [],
+          ),
+        ),
+      );
+    } catch (caught: unknown) {
+      toast.error(isIpcError(caught) ? caught.message : "Unable to scan the selected folder.");
+    }
+  };
+
+  const toggleImportCandidate = (path: string, checked?: boolean) => {
+    setSelectedImportPaths((current) => {
+      const next = new Set(current);
+      const shouldSelect = checked ?? !next.has(path);
+      if (shouldSelect) {
+        next.add(path);
+      } else {
+        next.delete(path);
+      }
+      return next;
+    });
+  };
+
+  const toggleAllImportCandidates = () => {
+    setSelectedImportPaths((current) => {
+      const next = new Set(current);
+      selectableImportPaths.forEach((path) => {
+        if (allImportCandidatesSelected) {
+          next.delete(path);
+        } else {
+          next.add(path);
+        }
+      });
+      return next;
+    });
+  };
+
+  const handleImport = async () => {
+    const root = importPreview?.root.value;
+    if (!importPreview || !root) {
+      toast.error("The selected folder path cannot be imported on this platform.");
+      return;
+    }
+    const paths = importPreview.candidates.flatMap((candidate) => {
+      const path = candidate.path.value;
+      return path && selectedImportPaths.has(path) ? [path] : [];
+    });
+    if (paths.length === 0) {
+      return;
+    }
+
+    try {
+      const outcome = await importLocalSkills({ root, paths });
+      closeImportDialog();
+      const importedCount = outcome.importedSkillIds.length;
+      const skippedCount = outcome.skippedPaths.length;
+      if (skippedCount > 0) {
+        toast.warning(
+          `Imported ${importedCount} skill${importedCount === 1 ? "" : "s"}; skipped ${skippedCount} already present or conflicting with a catalog directory.`,
+        );
+      } else {
+        toast.success(`Imported ${importedCount} skill${importedCount === 1 ? "" : "s"}.`);
+      }
+    } catch (caught: unknown) {
+      toast.error(isIpcError(caught) ? caught.message : "Unable to import the selected skills.");
+    }
+  };
+
+  const handleExport = async () => {
+    const skillIds = Array.from(selectedSkillIds);
+    if (skillIds.length === 0) {
+      return;
+    }
+
+    try {
+      const destinationRoot = await selectDirectory("Select export destination folder");
+      if (!destinationRoot) {
+        return;
+      }
+      const outcome = await exportCatalogSkills({ destinationRoot, skillIds });
+      const exportedCount = outcome.exportedSkillIds.length;
+      toast.success(
+        `Exported ${exportedCount} skill${exportedCount === 1 ? "" : "s"} to ${outcome.exportRoot.display}.`,
+      );
+    } catch (caught: unknown) {
+      toast.error(isIpcError(caught) ? caught.message : "Unable to export the selected skills.");
+    }
   };
 
   const isSelectionUnavailable = activeTab === "set" || visibleSkillIds.length === 0;
@@ -255,12 +446,19 @@ export function SkillsPage() {
               type="button"
               variant="destructive"
               size="sm"
-              aria-label="Delete unavailable"
-              title="Skill deletion is unavailable"
-              disabled
+              aria-label="Delete selected skills"
+              disabled={
+                activeTab === "set" ||
+                selectedSkillIds.size === 0 ||
+                isDeleting ||
+                isScanningImport ||
+                isImporting ||
+                isExporting
+              }
+              onClick={() => setIsDeleteDialogOpen(true)}
             >
               <RiDeleteBinLine aria-hidden="true" data-icon="inline-start" />
-              Delete
+              {isDeleting ? "Deleting…" : "Delete"}
             </Button>
           </>
           {activeTab === "item" ? (
@@ -269,23 +467,41 @@ export function SkillsPage() {
                 type="button"
                 variant="outline"
                 size="sm"
-                aria-label="Import unavailable"
-                title="Skill import is unavailable"
-                disabled
+                aria-busy={isScanningImport}
+                title="Import skills from a local folder"
+                disabled={
+                  isLoading ||
+                  isRefreshing ||
+                  isDeleting ||
+                  isScanningImport ||
+                  isImporting ||
+                  isExporting
+                }
+                onClick={() => void handleChooseImportFolder()}
               >
                 <RiDownloadLine aria-hidden="true" data-icon="inline-start" />
-                Import
+                {isScanningImport ? "Scanning…" : "Import"}
               </Button>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                aria-label="Export unavailable"
-                title="Skill export is unavailable"
-                disabled
+                aria-label="Export selected skills"
+                aria-busy={isExporting}
+                title="Export selected skills to a local folder"
+                disabled={
+                  selectedSkillIds.size === 0 ||
+                  isLoading ||
+                  isRefreshing ||
+                  isDeleting ||
+                  isScanningImport ||
+                  isImporting ||
+                  isExporting
+                }
+                onClick={() => void handleExport()}
               >
                 <RiUploadLine aria-hidden="true" data-icon="inline-start" />
-                Export
+                {isExporting ? "Exporting…" : "Export"}
               </Button>
             </>
           ) : (
@@ -306,8 +522,16 @@ export function SkillsPage() {
             variant="outline"
             size="sm"
             aria-busy={isRefreshing}
-            disabled={isLoading || isRefreshing}
-            onClick={handleRefresh}
+            title="Scan agent skills and refresh the central catalog"
+            disabled={
+              isLoading ||
+              isRefreshing ||
+              isDeleting ||
+              isScanningImport ||
+              isImporting ||
+              isExporting
+            }
+            onClick={() => void handleRefresh()}
           >
             <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
             Refresh
@@ -363,7 +587,7 @@ export function SkillsPage() {
                   variant="outline"
                   size="sm"
                   disabled={isRefreshing}
-                  onClick={handleRefresh}
+                  onClick={() => void handleRefresh()}
                 >
                   <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
                   Retry
@@ -385,7 +609,7 @@ export function SkillsPage() {
                   variant="outline"
                   size="sm"
                   className="mt-4"
-                  onClick={handleRefresh}
+                  onClick={() => void handleRefresh()}
                 >
                   <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
                   Retry
@@ -425,6 +649,214 @@ export function SkillsPage() {
           </TabsContent>
         </Tabs>
       </div>
+
+      <Dialog
+        open={importPreview !== null}
+        onOpenChange={(open) => {
+          if (!open && !isImporting) {
+            closeImportDialog();
+          }
+        }}
+      >
+        <DialogContent className="flex h-[min(80vh,720px)] max-w-3xl flex-col gap-0 overflow-hidden">
+          {importPreview ? (
+            <>
+              <DialogHeader className="mb-4">
+                <DialogTitle>Select skills to import</DialogTitle>
+              </DialogHeader>
+
+              {importPreview.candidates.length > 0 ? (
+                <div className="flex w-full min-w-0 items-center gap-2 p-4">
+                  <div className="relative min-w-0 flex-1">
+                    <RiSearchLine
+                      aria-hidden="true"
+                      className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground"
+                    />
+                    <Input
+                      id="import-skill-search"
+                      aria-label="Search skills to import"
+                      value={importQuery}
+                      onChange={(event) => setImportQuery(event.currentTarget.value)}
+                      placeholder="Search skills"
+                      className="pl-8"
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    aria-pressed={allImportCandidatesSelected}
+                    disabled={isImporting || selectableImportPaths.length === 0}
+                    onClick={toggleAllImportCandidates}
+                  >
+                    <RiCheckboxMultipleLine aria-hidden="true" data-icon="inline-start" />
+                    {allImportCandidatesSelected ? "Deselect all" : "Select all"}
+                  </Button>
+                </div>
+              ) : null}
+
+              <ScrollArea className="min-h-0 flex-1">
+                <div className="space-y-2 px-4">
+                  {filteredImportCandidates.length > 0 ? (
+                    filteredImportCandidates.map((candidate) => {
+                      const path = candidate.path.value;
+                      return (
+                        <label
+                          key={candidate.path.display}
+                          className={cn(
+                            "flex items-start gap-3 border px-3 py-3 transition-colors",
+                            path
+                              ? "cursor-pointer hover:bg-muted/50"
+                              : "cursor-not-allowed opacity-60",
+                          )}
+                        >
+                          <Checkbox
+                            aria-label={`Import ${candidate.name}`}
+                            checked={path ? selectedImportPaths.has(path) : false}
+                            disabled={!path}
+                            onCheckedChange={(checked) => {
+                              if (path) {
+                                toggleImportCandidate(path, checked === true);
+                              }
+                            }}
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="flex min-w-0 items-baseline gap-2">
+                              <span className="truncate font-medium">{candidate.name}</span>
+                              {candidate.version ? (
+                                <span className="shrink-0 text-muted-foreground">
+                                  v{candidate.version}
+                                </span>
+                              ) : null}
+                            </span>
+                            <span className="mt-1 block text-muted-foreground">
+                              {candidate.description}
+                            </span>
+                            <span
+                              className="mt-1 block truncate font-mono text-[0.65rem] text-muted-foreground"
+                              title={candidate.path.display}
+                            >
+                              {candidate.path.display}
+                            </span>
+                            {!path ? (
+                              <span className="mt-1 block text-destructive">
+                                This path cannot be represented losslessly and cannot be imported.
+                              </span>
+                            ) : null}
+                          </span>
+                        </label>
+                      );
+                    })
+                  ) : (
+                    <div className="border px-4 py-10 text-center">
+                      <p className="text-sm font-medium">
+                        {importPreview.candidates.length > 0
+                          ? "No matching results"
+                          : "No skills found"}
+                      </p>
+                      <p className="mt-1 text-muted-foreground">
+                        {importPreview.candidates.length > 0
+                          ? "Try a different search term."
+                          : "The selected folder does not contain a valid SKILL.md."}
+                      </p>
+                    </div>
+                  )}
+
+                  {importPreview.diagnostics.length > 0 ? (
+                    <div role="alert" className="border border-destructive/40 px-3 py-3">
+                      <p className="font-medium">
+                        {importPreview.diagnostics.length} skill
+                        {importPreview.diagnostics.length === 1 ? "" : "s"} could not be scanned
+                      </p>
+                      <div className="mt-2 space-y-2">
+                        {importPreview.diagnostics.map((diagnostic) => (
+                          <div key={diagnostic.path.display} className="min-w-0">
+                            <p
+                              className="truncate font-mono text-[0.65rem]"
+                              title={diagnostic.path.display}
+                            >
+                              {diagnostic.path.display}
+                            </p>
+                            <p className="text-muted-foreground">
+                              {diagnostic.error.message}{" "}
+                              <span className="font-mono text-[0.65rem]">
+                                ({diagnostic.error.code})
+                              </span>
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </ScrollArea>
+
+              {importError ? (
+                <div role="alert" className="mt-4 border border-destructive/40 px-3 py-2">
+                  <p className="font-medium">Unable to import the selected skills</p>
+                  <p className="text-muted-foreground">
+                    {importError.message}{" "}
+                    <span className="font-mono text-[0.65rem]">({importError.code})</span>
+                  </p>
+                </div>
+              ) : null}
+
+              <DialogFooter className="mt-4 px-4">
+                <DialogClose asChild>
+                  <Button type="button" variant="outline" disabled={isImporting}>
+                    Cancel
+                  </Button>
+                </DialogClose>
+                <Button
+                  type="button"
+                  disabled={
+                    isImporting || selectedImportPaths.size === 0 || !importPreview.root.value
+                  }
+                  onClick={() => void handleImport()}
+                >
+                  {isImporting
+                    ? "Importing…"
+                    : `Import ${selectedImportPaths.size} skill${selectedImportPaths.size === 1 ? "" : "s"}`}
+                </Button>
+              </DialogFooter>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={isDeleteDialogOpen}
+        onOpenChange={(open) => {
+          if (!isDeleting) {
+            setIsDeleteDialogOpen(open);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete selected skills?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            This permanently deletes {selectedSkillIds.size} selected skill
+            {selectedSkillIds.size === 1 ? "" : "s"} from the central catalog and every detected
+            Agent skills directory.
+          </p>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="outline" disabled={isDeleting}>
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={isDeleting}
+              onClick={() => void handleDelete()}
+            >
+              {isDeleting ? "Deleting…" : "Delete permanently"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={viewingSkillId !== null}

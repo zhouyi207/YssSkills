@@ -55,7 +55,7 @@ const workspace = {
   id: "workspace-1",
   name: "Agents",
   kind: { kind: "agents" },
-  deploymentMode: "copy",
+  deploymentMode: "link",
   deploymentCount: 0,
 };
 
@@ -74,6 +74,7 @@ const workspaceObservation = {
     unsupported: [],
   },
   report: workspaceReport,
+  projectAgents: [],
 };
 
 const reconcileReport = {
@@ -187,6 +188,22 @@ describe("IPC services", () => {
       retryable: false,
       context: { command: "get_dashboard_overview" },
     });
+  });
+
+  it("reconciles the agents workspace through its reported workspace id", async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        agentsWorkspaceId: workspace.id,
+        harnesses: [],
+        workspaces: [],
+      })
+      .mockResolvedValueOnce(reconcileOutcome);
+
+    await expect(workspacesService.reconcileAgentsWorkspace()).resolves.toEqual(reconcileOutcome);
+    expect(invokeMock.mock.calls).toEqual([
+      ["get_workspaces_overview"],
+      ["reconcile_workspace", { request: { workspaceId: workspace.id } }],
+    ]);
   });
 
   it("preserves a structured backend error and retry metadata", async () => {

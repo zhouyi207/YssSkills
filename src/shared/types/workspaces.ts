@@ -31,6 +31,7 @@ export const harnessProbeDtoSchema = z
   .object({
     detectionStatus: detectionStatusDtoSchema,
     checkedPaths: z.array(pathDtoSchema),
+    agentPath: pathDtoSchema,
     globalSkillsPath: pathDtoSchema,
   })
   .strict();
@@ -44,7 +45,8 @@ export const harnessSummaryDtoSchema = z
     category: harnessCategoryDtoSchema,
     custom: z.boolean(),
     capabilities: harnessCapabilitiesDtoSchema,
-    deploymentCount: nonNegativeIntegerSchema,
+    skillCount: nonNegativeIntegerSchema,
+    linkedSkillIds: z.array(z.string()),
     probe: harnessProbeDtoSchema.nullable(),
     error: ipcErrorSchema.nullable(),
   })
@@ -52,7 +54,106 @@ export const harnessSummaryDtoSchema = z
 
 export type HarnessSummaryDto = z.infer<typeof harnessSummaryDtoSchema>;
 
-export const deploymentModeDtoSchema = z.enum(["copy", "symbolicLink", "junction"]);
+export const detectedAgentDtoSchema = z
+  .object({
+    detectorId: z.string(),
+    displayName: z.string(),
+    agentRoot: pathDtoSchema,
+    skillCount: nonNegativeIntegerSchema,
+    configured: z.boolean(),
+  })
+  .strict();
+
+export type DetectedAgentDto = z.infer<typeof detectedAgentDtoSchema>;
+
+export const agentDetectionDiagnosticDtoSchema = z
+  .object({
+    detectorId: z.string(),
+    displayName: z.string(),
+    error: ipcErrorSchema,
+  })
+  .strict();
+
+export type AgentDetectionDiagnosticDto = z.infer<typeof agentDetectionDiagnosticDtoSchema>;
+
+export const detectAgentsResponseDtoSchema = z
+  .object({
+    agents: z.array(detectedAgentDtoSchema),
+    diagnostics: z.array(agentDetectionDiagnosticDtoSchema),
+  })
+  .strict();
+
+export type DetectAgentsResponseDto = z.infer<typeof detectAgentsResponseDtoSchema>;
+
+export const addDetectedAgentsRequestDtoSchema = z
+  .object({ detectorIds: z.array(z.string()).min(1) })
+  .strict();
+
+export type AddDetectedAgentsRequestDto = z.infer<typeof addDetectedAgentsRequestDtoSchema>;
+
+export const addDetectedAgentsResponseDtoSchema = z
+  .object({ addedAgentIds: z.array(z.string()) })
+  .strict();
+
+export type AddDetectedAgentsResponseDto = z.infer<typeof addDetectedAgentsResponseDtoSchema>;
+
+export const deleteAgentsRequestDtoSchema = z
+  .object({ agentIds: z.array(z.string()).min(1) })
+  .strict();
+
+export type DeleteAgentsRequestDto = z.infer<typeof deleteAgentsRequestDtoSchema>;
+
+export const deleteAgentsResponseDtoSchema = z
+  .object({
+    deletedAgentIds: z.array(z.string()),
+    deletedSkillCount: nonNegativeIntegerSchema,
+  })
+  .strict();
+
+export type DeleteAgentsResponseDto = z.infer<typeof deleteAgentsResponseDtoSchema>;
+
+export const copyProjectAgentSkillsRequestDtoSchema = z
+  .object({
+    workspaceId: z.string(),
+    agentRoot: z.string().min(1),
+    skillIds: z.array(z.string()).min(1),
+  })
+  .strict();
+
+export type CopyProjectAgentSkillsRequestDto = z.infer<
+  typeof copyProjectAgentSkillsRequestDtoSchema
+>;
+
+export const copyProjectAgentSkillsResponseDtoSchema = z
+  .object({
+    skillsRoot: pathDtoSchema,
+    copiedSkillIds: z.array(z.string()),
+  })
+  .strict();
+
+export type CopyProjectAgentSkillsResponseDto = z.infer<
+  typeof copyProjectAgentSkillsResponseDtoSchema
+>;
+
+export const deleteProjectAgentsRequestDtoSchema = z
+  .object({
+    workspaceId: z.string(),
+    agentIds: z.array(z.string()).min(1),
+  })
+  .strict();
+
+export type DeleteProjectAgentsRequestDto = z.infer<typeof deleteProjectAgentsRequestDtoSchema>;
+
+export const deleteProjectAgentsResponseDtoSchema = z
+  .object({
+    deletedAgentIds: z.array(z.string()),
+    deletedSkillCount: nonNegativeIntegerSchema,
+  })
+  .strict();
+
+export type DeleteProjectAgentsResponseDto = z.infer<typeof deleteProjectAgentsResponseDtoSchema>;
+
+export const deploymentModeDtoSchema = z.enum(["copy", "link"]);
 
 export type DeploymentModeDto = z.infer<typeof deploymentModeDtoSchema>;
 
@@ -132,6 +233,30 @@ export const workspaceIdRequestDtoSchema = z
   .strict();
 
 export type WorkspaceIdRequestDto = z.infer<typeof workspaceIdRequestDtoSchema>;
+
+export const saveAgentRequestDtoSchema = z
+  .object({
+    agentId: z.string().nullable(),
+    displayName: z.string().min(1),
+    agentRoot: z.string().min(1),
+    skillIds: z.array(z.string()),
+  })
+  .strict();
+
+export type SaveAgentRequestDto = z.infer<typeof saveAgentRequestDtoSchema>;
+
+export const saveAgentResponseDtoSchema = z
+  .object({
+    agentId: z.string(),
+    displayName: z.string(),
+    agentRoot: pathDtoSchema,
+    skillsRoot: pathDtoSchema,
+    linkedSkillIds: z.array(z.string()),
+    removedSkillIds: z.array(z.string()),
+  })
+  .strict();
+
+export type SaveAgentResponseDto = z.infer<typeof saveAgentResponseDtoSchema>;
 
 export const targetRoleDtoSchema = z.enum(["primary", "disabled"]);
 
@@ -264,11 +389,24 @@ export const workspaceReportDtoSchema = z
 
 export type WorkspaceReportDto = z.infer<typeof workspaceReportDtoSchema>;
 
+export const projectAgentDtoSchema = z
+  .object({
+    id: z.string(),
+    displayName: z.string(),
+    path: pathDtoSchema,
+    skillCount: nonNegativeIntegerSchema,
+    error: ipcErrorSchema.nullable(),
+  })
+  .strict();
+
+export type ProjectAgentDto = z.infer<typeof projectAgentDtoSchema>;
+
 export const workspaceObservationDtoSchema = z
   .object({
     workspace: workspaceSummaryDtoSchema,
     resolution: workspaceResolutionDtoSchema,
     report: workspaceReportDtoSchema,
+    projectAgents: z.array(projectAgentDtoSchema),
   })
   .strict();
 
