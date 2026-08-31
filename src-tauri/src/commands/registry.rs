@@ -1,9 +1,9 @@
 use tauri::State;
+use yss_api::AppState;
 
 use crate::{
     commands::parse_request,
     ipc::{IpcError, RegistryLeaderboardRequestDto, RegistryResultDto, RegistrySearchRequestDto},
-    state::AppState,
 };
 
 #[tauri::command]

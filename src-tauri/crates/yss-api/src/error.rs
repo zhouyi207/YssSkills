@@ -7,6 +7,7 @@ use skill_local::LocalError;
 use skill_registry::{RegistryError, RetryAfter};
 use skill_workspace::{CatalogFailure, WorkspaceError};
 
+use crate::ApplicationWorkerError;
 use crate::{AgentConfigError, ApplicationError, PersistenceError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +83,19 @@ impl IpcError {
             "The application worker is unavailable.",
         )
         .retryable()
+    }
+}
+
+impl From<ApplicationWorkerError> for IpcError {
+    fn from(error: ApplicationWorkerError) -> Self {
+        match error {
+            ApplicationWorkerError::Initialization(error)
+            | ApplicationWorkerError::Operation(error) => (*error).into(),
+            ApplicationWorkerError::Start(source) => Self::application_worker_start_failed(source),
+            ApplicationWorkerError::Unavailable | ApplicationWorkerError::ResponseDropped => {
+                Self::application_worker_unavailable()
+            }
+        }
     }
 }
 

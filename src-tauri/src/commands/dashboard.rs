@@ -1,9 +1,9 @@
 use tauri::State;
+use yss_api::AppState;
 
 use crate::{
     commands::run_application,
     ipc::{DashboardOverviewDto, IpcError},
-    state::AppState,
 };
 
 #[tauri::command]

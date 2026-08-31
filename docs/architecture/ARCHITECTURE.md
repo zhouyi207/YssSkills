@@ -35,7 +35,8 @@ YssSkills 是一个通过 Tauri 提供桌面界面的 Skill 管理器。它需�
 - `skill-workspace` 提供 Agents/Project/Linked Workspace 模型、目标解析、只读
   `observe`、中央库收敛式 `reconcile` 以及相应公开端口；
 - `yss-api` 提供 SQLite 中央 catalog/Workspace adapter、application workflow、显式 IPC DTO
-  和结构化错误映射；根 `yssskills` package 暂保留专用 worker 和 Tauri commands；
+  和结构化错误映射，并拥有 application/index worker 生命周期；根 `yssskills` package 只保留
+  Tauri startup/state registration 与 commands；
 - 前端 Dashboard、Skills、Workspaces、Registry、Settings 页面通过 application hooks 和
   typed services 调用真实 commands，所有业务 `invoke` 集中在 IPC client；
 - registry install、Workspace watcher 自动调度、周期性 reconcile、自定义
@@ -462,9 +463,9 @@ reconcile 尚未由 Tauri 应用调度，当前收敛只由用户显式 Sync 发
 
 ### 4.6 `yss-api` 应用层、文件系统 Catalog 与 SQLite adapter
 
-`yss-api` crate 拥有 `Application`、`PersistentCatalog`、Agent 配置 store、Harness registry
-和本地文件端口，且不依赖 Tauri。当前根 `yssskills` package 仍通过专用
-`yssskills-application` 单线程 worker 持有 `Application`；Tauri async command
+`yss-api` crate 拥有 `Application`、`PersistentCatalog`、Agent 配置 store、Harness registry、
+本地文件端口以及专用 `yssskills-application`/`yssskills-skill-index` worker 生命周期，且不依赖
+Tauri。Tauri async command
 使用 message passing 把阻塞的数据库和文件写入工作交给该 worker，不持有同步锁跨 I/O；
 独立的 `yssskills-skill-index` worker 在不占用 application command 队列的情况下执行启动
 reconcile、metadata scan、parse/hash 和 watcher 驱动的索引更新。registry blocking client 则在

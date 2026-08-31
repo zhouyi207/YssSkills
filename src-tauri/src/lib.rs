@@ -1,6 +1,5 @@
 mod commands;
 mod ipc;
-mod state;
 
 use std::{
     fs,
@@ -8,8 +7,8 @@ use std::{
 };
 
 use skill_registry::SkillsShClient;
-use state::{AppState, ApplicationHandle};
 use tauri::Manager;
+use yss_api::{AppState, ApplicationHandle};
 
 fn default_catalog_root(home_dir: &Path) -> PathBuf {
     home_dir.join(".yss-skills")

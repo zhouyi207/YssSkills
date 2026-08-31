@@ -7,8 +7,8 @@ pub(crate) mod workspaces;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::{ipc::IpcError, state::ApplicationHandle};
-use yss_api::{Application, ApplicationError};
+use crate::ipc::IpcError;
+use yss_api::{Application, ApplicationError, ApplicationHandle};
 
 fn parse_request<T>(request: Option<Value>) -> Result<T, IpcError>
 where
@@ -27,7 +27,7 @@ where
     tauri::async_runtime::spawn_blocking(move || handle.execute(operation))
         .await
         .map_err(IpcError::blocking_task_failed)?
-        .map_err(crate::ipc::map_application_worker_error)
+        .map_err(Into::into)
 }
 
 #[cfg(test)]

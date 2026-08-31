@@ -15,7 +15,7 @@ use skill_local::{WatchManager, WatchTarget, WatchTargetKind};
 use skill_registry::SkillsShClient;
 use thiserror::Error;
 
-use yss_api::{Application, ApplicationError, CatalogIndexWorkerConfig};
+use crate::{Application, ApplicationError, CatalogIndexWorkerConfig};
 
 type ApplicationJob = Box<dyn FnOnce(&mut Application) + Send + 'static>;
 
@@ -52,9 +52,9 @@ pub enum ApplicationWorkerError {
     #[error("failed to start the application worker")]
     Start(#[source] io::Error),
     #[error("failed to initialize application state")]
-    Initialization(#[source] ApplicationError),
+    Initialization(#[source] Box<ApplicationError>),
     #[error("application operation failed")]
-    Operation(#[source] ApplicationError),
+    Operation(#[source] Box<ApplicationError>),
     #[error("the application worker is unavailable")]
     Unavailable,
     #[error("the application worker stopped before returning a response")]
@@ -106,7 +106,7 @@ impl ApplicationHandle {
             Ok(index_config) => index_config,
             Err(error) => {
                 join_startup_application_thread(application_thread);
-                return Err(ApplicationWorkerError::Initialization(error));
+                return Err(ApplicationWorkerError::Initialization(Box::new(error)));
             }
         };
         let (index_sender, index_receiver) = mpsc::channel();
@@ -147,7 +147,8 @@ impl ApplicationHandle {
             .application_sender
             .send(ApplicationMessage::Execute(Box::new(move |application| {
                 let previous_index_config = application.catalog_index_worker_config();
-                let result = operation(application).map_err(ApplicationWorkerError::Operation);
+                let result = operation(application)
+                    .map_err(|error| ApplicationWorkerError::Operation(Box::new(error)));
                 let next_index_config = application.catalog_index_worker_config();
                 if previous_index_config != next_index_config
                     && index_sender
@@ -382,7 +383,7 @@ mod tests {
 
     fn wait_for_catalog(
         handle: &ApplicationHandle,
-        predicate: impl Fn(&yss_api::CatalogSkillList) -> bool,
+        predicate: impl Fn(&crate::CatalogSkillList) -> bool,
     ) {
         let deadline = Instant::now() + Duration::from_secs(8);
         loop {

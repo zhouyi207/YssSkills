@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
 use tauri::State;
+use yss_api::AppState;
 
 use crate::{
     commands::{parse_request, run_application},
     ipc::{AppSettingsDto, IpcError, UpdateCatalogRootRequestDto},
-    state::AppState,
 };
 
 #[tauri::command]

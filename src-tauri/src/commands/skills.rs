@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use tauri::State;
-use yss_api::fetch_catalog_skill_updates;
+use yss_api::{fetch_catalog_skill_updates, AppState};
 
 use crate::{
     commands::{parse_request, run_application},
@@ -14,7 +14,6 @@ use crate::{
         SkillIdRequestDto, SkillSetDto, UpdateCatalogSkillsRequestDto,
         UpdateCatalogSkillsResponseDto, UpdateSkillSetRequestDto,
     },
-    state::AppState,
 };
 
 #[tauri::command]

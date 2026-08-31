@@ -1,4 +1,5 @@
 use tauri::State;
+use yss_api::AppState;
 
 use crate::{
     commands::{parse_request, run_application},
@@ -11,7 +12,6 @@ use crate::{
         WorkspaceObservationDto, WorkspaceReconcileOutcomeDto, WorkspaceSummaryDto,
         WorkspacesOverviewDto,
     },
-    state::AppState,
 };
 
 #[tauri::command]
