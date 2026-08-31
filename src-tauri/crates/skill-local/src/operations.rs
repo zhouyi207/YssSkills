@@ -13,12 +13,6 @@ use super::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LinkKind {
-    Symbolic,
-    Junction,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExistingDestination {
     Reject,
     Replace,
@@ -27,9 +21,63 @@ pub enum ExistingDestination {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalOperation {
     Copied,
-    SymbolicLink,
-    Junction,
+    Linked,
     Deleted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlatformLinkStrategy {
+    #[cfg(unix)]
+    SymbolicLink,
+    #[cfg(windows)]
+    Junction,
+    #[cfg(not(any(unix, windows)))]
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlatformLinker {
+    strategy: PlatformLinkStrategy,
+}
+
+impl PlatformLinker {
+    pub fn detect() -> Self {
+        #[cfg(unix)]
+        {
+            Self {
+                strategy: PlatformLinkStrategy::SymbolicLink,
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            Self {
+                strategy: PlatformLinkStrategy::Junction,
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            Self {
+                strategy: PlatformLinkStrategy::Unsupported,
+            }
+        }
+    }
+
+    pub fn link(
+        &self,
+        source: &Path,
+        target: &Path,
+        existing: ExistingDestination,
+    ) -> Result<OperationResult, LocalError> {
+        link_skill_with_strategy(source, target, existing, self.strategy)
+    }
+}
+
+impl Default for PlatformLinker {
+    fn default() -> Self {
+        Self::detect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,16 +148,17 @@ pub fn copy_skill(
 pub fn link_skill(
     source: &Path,
     target: &Path,
-    kind: LinkKind,
     existing: ExistingDestination,
 ) -> Result<OperationResult, LocalError> {
-    #[cfg(not(windows))]
-    if matches!(kind, LinkKind::Junction) {
-        return Err(LocalError::UnsupportedOperation {
-            operation: "junction",
-        });
-    }
+    PlatformLinker::detect().link(source, target, existing)
+}
 
+fn link_skill_with_strategy(
+    source: &Path,
+    target: &Path,
+    existing: ExistingDestination,
+    strategy: PlatformLinkStrategy,
+) -> Result<OperationResult, LocalError> {
     let target_path = normalize_final_path(target)?;
     let source_path = normalize_final_path(source)?;
     ensure_directory(source)?;
@@ -148,15 +197,12 @@ pub fn link_skill(
 
     let staging_path = auxiliary_path(target_parent, "staging")?;
     prepare_staging(&staging_path, target, &source_hash, |staging| {
-        create_link(&canonical_source, staging, kind)
+        create_platform_link(&canonical_source, staging, strategy)
     })?;
     commit_staged(&staging_path, &target_path, target_exists, target_parent)?;
 
     Ok(OperationResult {
-        operation: match kind {
-            LinkKind::Symbolic => LocalOperation::SymbolicLink,
-            LinkKind::Junction => LocalOperation::Junction,
-        },
+        operation: LocalOperation::Linked,
         path: target.to_path_buf(),
     })
 }
@@ -351,11 +397,63 @@ fn auxiliary_path(parent: &Path, purpose: &str) -> Result<PathBuf, LocalError> {
     }
 }
 
-fn create_link(source: &Path, target: &Path, kind: LinkKind) -> Result<(), LocalError> {
-    match kind {
-        LinkKind::Symbolic => create_symbolic_link(source, target),
-        LinkKind::Junction => create_junction(source, target),
+fn create_platform_link(
+    source: &Path,
+    target: &Path,
+    strategy: PlatformLinkStrategy,
+) -> Result<(), LocalError> {
+    match strategy {
+        #[cfg(unix)]
+        PlatformLinkStrategy::SymbolicLink => create_symbolic_link(source, target),
+        #[cfg(windows)]
+        PlatformLinkStrategy::Junction => create_junction(source, target),
+        #[cfg(not(any(unix, windows)))]
+        PlatformLinkStrategy::Unsupported => Err(LocalError::UnsupportedOperation {
+            operation: "platform link",
+        }),
     }
+}
+
+pub fn delete_link(path: &Path) -> Result<OperationResult, LocalError> {
+    if link_target(path)?.is_none() {
+        return Err(LocalError::NotLink {
+            path: path.to_path_buf(),
+        });
+    }
+    remove_without_following(path)?;
+    Ok(OperationResult {
+        operation: LocalOperation::Deleted,
+        path: path.to_path_buf(),
+    })
+}
+
+pub fn remove_broken_links(root: &Path) -> Result<Vec<PathBuf>, LocalError> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(map_io_error(root, source)),
+    };
+    let mut removed = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| map_io_error(root, source))?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|source| map_io_error(&path, source))?;
+        if !is_link(&path, metadata.file_type())? {
+            continue;
+        }
+        let Some(target) = link_target(&path)? else {
+            continue;
+        };
+        match target.try_exists() {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(source) => return Err(map_io_error(&path, source)),
+        }
+        remove_link(&path)?;
+        removed.push(path);
+    }
+    removed.sort();
+    Ok(removed)
 }
 
 #[cfg(unix)]
@@ -365,28 +463,8 @@ fn create_symbolic_link(source: &Path, target: &Path) -> Result<(), LocalError> 
 }
 
 #[cfg(windows)]
-fn create_symbolic_link(source: &Path, target: &Path) -> Result<(), LocalError> {
-    std::os::windows::fs::symlink_dir(source, target)
-        .map_err(|source_error| map_io_error(target, source_error))
-}
-
-#[cfg(not(any(unix, windows)))]
-fn create_symbolic_link(_source: &Path, target: &Path) -> Result<(), LocalError> {
-    Err(LocalError::UnsupportedOperation {
-        operation: "symbolic link",
-    })
-}
-
-#[cfg(windows)]
 fn create_junction(source: &Path, target: &Path) -> Result<(), LocalError> {
     junction::create(source, target).map_err(|source_error| map_io_error(target, source_error))
-}
-
-#[cfg(not(windows))]
-fn create_junction(_source: &Path, _target: &Path) -> Result<(), LocalError> {
-    Err(LocalError::UnsupportedOperation {
-        operation: "junction",
-    })
 }
 
 fn preflight_nested_links(root: &Path) -> Result<(), LocalError> {
@@ -657,9 +735,47 @@ fn is_link(path: &Path, file_type: fs::FileType) -> Result<bool, LocalError> {
     is_junction(path)
 }
 
+#[cfg(windows)]
+pub fn link_target(path: &Path) -> Result<Option<PathBuf>, LocalError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| map_io_error(path, source))?;
+    let target = if metadata.file_type().is_symlink() {
+        Some(fs::read_link(path).map_err(|source| map_io_error(path, source))?)
+    } else if metadata.is_dir() {
+        match junction::get_target(path) {
+            Ok(target) => Some(target),
+            Err(source) if is_not_a_junction_error(&source) => None,
+            Err(source) => return Err(map_io_error(path, source)),
+        }
+    } else {
+        None
+    };
+    Ok(target.map(|target| resolve_link_target(path, target)))
+}
+
 #[cfg(not(windows))]
 fn is_link(_path: &Path, file_type: fs::FileType) -> Result<bool, LocalError> {
     Ok(file_type.is_symlink())
+}
+
+#[cfg(not(windows))]
+pub fn link_target(path: &Path) -> Result<Option<PathBuf>, LocalError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| map_io_error(path, source))?;
+    if !metadata.file_type().is_symlink() {
+        return Ok(None);
+    }
+    let target = fs::read_link(path).map_err(|source| map_io_error(path, source))?;
+    Ok(Some(resolve_link_target(path, target)))
+}
+
+fn resolve_link_target(path: &Path, target: PathBuf) -> PathBuf {
+    if target.is_absolute() {
+        target
+    } else {
+        path.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .join(target)
+    }
 }
 
 #[cfg(windows)]

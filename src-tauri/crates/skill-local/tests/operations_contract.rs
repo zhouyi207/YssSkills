@@ -6,7 +6,7 @@ use std::{
 
 use skill_local::{
     copy_skill, delete_skill, hash_directory, link_skill, read_skill, ExistingDestination,
-    LinkKind, LocalError, LocalOperation,
+    LocalError, LocalOperation,
 };
 use tempfile::{tempdir, tempdir_in};
 
@@ -234,12 +234,7 @@ fn invalid_final_path_child() {
     let source = PathBuf::from(source);
     let error = match operation.as_str() {
         "copy" => copy_skill(&source, Path::new(&target), ExistingDestination::Replace),
-        "link" => link_skill(
-            &source,
-            Path::new(&target),
-            LinkKind::Symbolic,
-            ExistingDestination::Replace,
-        ),
+        "link" => link_skill(&source, Path::new(&target), ExistingDestination::Replace),
         _ => panic!("unexpected operation: {operation}"),
     }
     .unwrap_err();
@@ -404,20 +399,14 @@ fn delete_skill_rejects_a_directory_without_a_marker() {
 
 #[cfg(unix)]
 #[test]
-fn symbolic_link_can_be_read_and_deleted_without_deleting_source() {
+fn platform_link_uses_a_symbolic_link_and_preserves_its_source_on_unix() {
     let root = tempdir().unwrap();
     let source = write_skill(&root.path().join("source"), "source");
     let target = root.path().join("linked");
 
-    let result = link_skill(
-        &source,
-        &target,
-        LinkKind::Symbolic,
-        ExistingDestination::Reject,
-    )
-    .unwrap();
+    let result = link_skill(&source, &target, ExistingDestination::Reject).unwrap();
 
-    assert_eq!(result.operation, LocalOperation::SymbolicLink);
+    assert_eq!(result.operation, LocalOperation::Linked);
     assert_eq!(
         read_skill(&target).unwrap().document.metadata().name(),
         "source"
@@ -430,46 +419,14 @@ fn symbolic_link_can_be_read_and_deleted_without_deleting_source() {
 
 #[cfg(windows)]
 #[test]
-fn symbolic_link_can_be_read_and_deleted_without_deleting_source() {
+fn platform_link_uses_a_junction_and_preserves_its_source_on_windows() {
     let root = tempdir().unwrap();
     let source = write_skill(&root.path().join("source"), "source");
     let target = root.path().join("linked");
 
-    let result = link_skill(
-        &source,
-        &target,
-        LinkKind::Symbolic,
-        ExistingDestination::Reject,
-    )
-    .unwrap();
+    let result = link_skill(&source, &target, ExistingDestination::Reject).unwrap();
 
-    assert_eq!(result.operation, LocalOperation::SymbolicLink);
-    assert_eq!(
-        read_skill(&target).unwrap().document.metadata().name(),
-        "source"
-    );
-    assert!(target.symlink_metadata().unwrap().file_type().is_symlink());
-    delete_skill(&target.join(".")).unwrap();
-    assert!(fs::symlink_metadata(&target).is_err());
-    assert!(source.exists());
-}
-
-#[cfg(windows)]
-#[test]
-fn junction_can_be_read_and_deleted_without_deleting_source() {
-    let root = tempdir().unwrap();
-    let source = write_skill(&root.path().join("source"), "source");
-    let target = root.path().join("junction");
-
-    let result = link_skill(
-        &source,
-        &target,
-        LinkKind::Junction,
-        ExistingDestination::Reject,
-    )
-    .unwrap();
-
-    assert_eq!(result.operation, LocalOperation::Junction);
+    assert_eq!(result.operation, LocalOperation::Linked);
     assert_eq!(
         read_skill(&target).unwrap().document.metadata().name(),
         "source"
@@ -480,62 +437,13 @@ fn junction_can_be_read_and_deleted_without_deleting_source() {
     assert!(source.exists());
 }
 
-#[cfg(not(windows))]
-#[test]
-fn junction_is_rejected_on_non_windows_platforms() {
-    let root = tempdir().unwrap();
-    let source = write_skill(&root.path().join("source"), "source");
-    let target = root.path().join("junction");
-
-    let error = link_skill(
-        &source,
-        &target,
-        LinkKind::Junction,
-        ExistingDestination::Reject,
-    )
-    .unwrap_err();
-
-    assert!(matches!(error, LocalError::UnsupportedOperation { .. }));
-    assert!(!target.exists());
-}
-
-#[cfg(not(windows))]
-#[test]
-fn link_skill_keeps_existing_target_when_junction_is_unsupported() {
-    let root = tempdir().unwrap();
-    let source = write_skill(&root.path().join("source"), "source");
-    let target = write_skill(&root.path().join("target"), "original");
-    let before = hash_directory(&target).unwrap();
-
-    let error = link_skill(
-        &source,
-        &target,
-        LinkKind::Junction,
-        ExistingDestination::Replace,
-    )
-    .unwrap_err();
-
-    assert!(matches!(error, LocalError::UnsupportedOperation { .. }));
-    assert_eq!(hash_directory(&target).unwrap(), before);
-    assert_eq!(
-        read_skill(&target).unwrap().document.metadata().name(),
-        "original"
-    );
-}
-
 #[test]
 fn link_skill_rejects_an_existing_regular_target() {
     let root = tempdir().unwrap();
     let source = write_skill(&root.path().join("source"), "source");
     let target = write_skill(&root.path().join("target"), "original");
 
-    let error = link_skill(
-        &source,
-        &target,
-        LinkKind::Symbolic,
-        ExistingDestination::Reject,
-    )
-    .unwrap_err();
+    let error = link_skill(&source, &target, ExistingDestination::Reject).unwrap_err();
 
     assert!(matches!(error, LocalError::DestinationExists { .. }));
     assert!(!target.symlink_metadata().unwrap().file_type().is_symlink());
@@ -551,16 +459,9 @@ fn link_skill_replaces_an_existing_regular_target() {
     let source = write_skill(&root.path().join("source"), "source");
     let target = write_skill(&root.path().join("target"), "original");
 
-    let result = link_skill(
-        &source,
-        &target,
-        LinkKind::Symbolic,
-        ExistingDestination::Replace,
-    )
-    .unwrap();
+    let result = link_skill(&source, &target, ExistingDestination::Replace).unwrap();
 
-    assert_eq!(result.operation, LocalOperation::SymbolicLink);
-    assert!(target.symlink_metadata().unwrap().file_type().is_symlink());
+    assert_eq!(result.operation, LocalOperation::Linked);
     assert_eq!(
         read_skill(&target).unwrap().document.metadata().name(),
         "source"
@@ -572,13 +473,7 @@ fn link_skill_rejects_a_source_target_conflict() {
     let root = tempdir().unwrap();
     let source = write_skill(&root.path().join("source"), "source");
 
-    let error = link_skill(
-        &source,
-        &source,
-        LinkKind::Symbolic,
-        ExistingDestination::Replace,
-    )
-    .unwrap_err();
+    let error = link_skill(&source, &source, ExistingDestination::Replace).unwrap_err();
 
     assert!(matches!(error, LocalError::PathConflict { .. }));
     assert_eq!(
@@ -597,13 +492,7 @@ fn link_skill_rejects_replacing_its_source_symbolic_link_entry() {
     let source = root.path().join("source-link");
     symlink(&external, &source).unwrap();
 
-    let error = link_skill(
-        &source,
-        &source.join("."),
-        LinkKind::Symbolic,
-        ExistingDestination::Replace,
-    )
-    .unwrap_err();
+    let error = link_skill(&source, &source.join("."), ExistingDestination::Replace).unwrap_err();
 
     assert!(matches!(error, LocalError::PathConflict { .. }));
     assert!(source.symlink_metadata().unwrap().file_type().is_symlink());
@@ -621,13 +510,7 @@ fn link_skill_rejects_replacing_its_source_junction_entry() {
     let source = root.path().join("source-link");
     junction::create(&external, &source).unwrap();
 
-    let error = link_skill(
-        &source,
-        &source.join("."),
-        LinkKind::Junction,
-        ExistingDestination::Replace,
-    )
-    .unwrap_err();
+    let error = link_skill(&source, &source.join("."), ExistingDestination::Replace).unwrap_err();
 
     assert!(matches!(error, LocalError::PathConflict { .. }));
     assert!(junction::get_target(&source).is_ok());
@@ -649,15 +532,9 @@ fn link_skill_replaces_a_symbolic_link_without_deleting_external_target() {
     let target = root.path().join("target-link");
     symlink(&external, &target).unwrap();
 
-    let result = link_skill(
-        &source,
-        &target,
-        LinkKind::Symbolic,
-        ExistingDestination::Replace,
-    )
-    .unwrap();
+    let result = link_skill(&source, &target, ExistingDestination::Replace).unwrap();
 
-    assert_eq!(result.operation, LocalOperation::SymbolicLink);
+    assert_eq!(result.operation, LocalOperation::Linked);
     assert_eq!(
         fs::read(external.join("keep.txt")).unwrap(),
         b"keep this target"
@@ -678,15 +555,9 @@ fn link_skill_replaces_a_junction_without_deleting_external_target() {
     let target = root.path().join("target-junction");
     junction::create(&external, &target).unwrap();
 
-    let result = link_skill(
-        &source,
-        &target,
-        LinkKind::Junction,
-        ExistingDestination::Replace,
-    )
-    .unwrap();
+    let result = link_skill(&source, &target, ExistingDestination::Replace).unwrap();
 
-    assert_eq!(result.operation, LocalOperation::Junction);
+    assert_eq!(result.operation, LocalOperation::Linked);
     assert_eq!(
         fs::read(external.join("keep.txt")).unwrap(),
         b"keep this target"
@@ -708,15 +579,9 @@ fn link_skill_resolves_a_relative_source_against_the_current_directory() {
         .to_path_buf();
     let target = root.path().join("linked");
 
-    let result = link_skill(
-        &relative_source,
-        &target,
-        LinkKind::Symbolic,
-        ExistingDestination::Reject,
-    )
-    .unwrap();
+    let result = link_skill(&relative_source, &target, ExistingDestination::Reject).unwrap();
 
-    assert_eq!(result.operation, LocalOperation::SymbolicLink);
+    assert_eq!(result.operation, LocalOperation::Linked);
     assert_eq!(
         read_skill(&target).unwrap().document.metadata().name(),
         "source"
@@ -730,13 +595,7 @@ fn link_skill_rejects_a_non_skill_source() {
     fs::create_dir_all(&source).unwrap();
     let target = root.path().join("linked");
 
-    let error = link_skill(
-        &source,
-        &target,
-        LinkKind::Symbolic,
-        ExistingDestination::Reject,
-    )
-    .unwrap_err();
+    let error = link_skill(&source, &target, ExistingDestination::Reject).unwrap_err();
 
     assert!(matches!(error, LocalError::MarkerNotFound { .. }));
     assert!(target.symlink_metadata().is_err());

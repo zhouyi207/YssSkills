@@ -13,10 +13,11 @@ use crate::{
     error::{CatalogFailure, WorkspaceError},
     model::{
         choose_newest_local, classify_deployment, compare_paths, normalized_path_key, path_key,
-        DeploymentBinding, DeploymentKey, DeploymentMode, DeploymentObservation, DeploymentStatus,
-        DiscoveryRoot, LocalCandidate, ReconcileReport, SkillVersion, TargetRole,
-        UnmatchedLocalSkill, UnsupportedWorkspaceTarget, Workspace, WorkspaceDiagnostic,
-        WorkspaceId, WorkspaceKind, WorkspaceReport, WorkspaceResolution, WorkspaceTarget,
+        CentralSkillSnapshot, DeploymentBinding, DeploymentKey, DeploymentMode,
+        DeploymentObservation, DeploymentStatus, DiscoveryRoot, LocalCandidate, ReconcileReport,
+        SkillVersion, TargetRole, UnmatchedLocalSkill, UnsupportedWorkspaceTarget, Workspace,
+        WorkspaceDiagnostic, WorkspaceId, WorkspaceKind, WorkspaceReport, WorkspaceResolution,
+        WorkspaceTarget,
     },
     ports::{CentralCatalogPort, CentralMatch, LocalSkillPort},
 };
@@ -209,6 +210,15 @@ where
                 || match_failures.contains(&normalized_path_key(&binding.target_path));
             let status = if operation_failed {
                 DeploymentStatus::Error
+            } else if binding.deployment_mode == DeploymentMode::Link
+                && center.as_ref().is_some_and(|center| {
+                    local.is_some_and(|local| {
+                        local.scanned.content_hash == center.version.content_hash
+                            && !local_matches_center(local, &binding, center)
+                    })
+                })
+            {
+                DeploymentStatus::CenterNewer
             } else {
                 classify_deployment(
                     true,
@@ -248,6 +258,9 @@ where
     ) -> Result<ReconcileReport, WorkspaceError> {
         let resolution = resolve_workspace(workspace, harnesses, environment, deployment_mode)?;
         let mut operation_diagnostics = Vec::new();
+        if matches!(&workspace.kind, WorkspaceKind::Agents) {
+            self.cleanup_broken_agent_links(&resolution, &mut operation_diagnostics);
+        }
 
         let initial_center_snapshots = match self.catalog.list() {
             Ok(snapshots) => Some(snapshots),
@@ -644,9 +657,8 @@ where
                 }
 
                 let target_matches_center =
-                    local_candidate_for_binding(&matched_local, &binding, target).is_some_and(
-                        |candidate| candidate.scanned.content_hash == center.version.content_hash,
-                    );
+                    local_candidate_for_binding(&matched_local, &binding, target)
+                        .is_some_and(|candidate| local_matches_center(candidate, &binding, center));
                 if target_matches_center {
                     continue;
                 }
@@ -739,6 +751,36 @@ where
         ScanInventory {
             skills: inventory,
             failures,
+        }
+    }
+
+    fn cleanup_broken_agent_links(
+        &self,
+        resolution: &WorkspaceResolution,
+        diagnostics: &mut Vec<WorkspaceDiagnostic>,
+    ) {
+        let mut inspected_roots = HashSet::new();
+        let roots = resolution
+            .targets
+            .iter()
+            .map(|target| target.path.as_path())
+            .chain(
+                resolution
+                    .discovery_roots
+                    .iter()
+                    .map(|root| root.path.as_path()),
+            );
+        for root in roots {
+            if !inspected_roots.insert(normalized_path_key(root)) {
+                continue;
+            }
+            if let Err(error) = self.local.remove_broken_links(root) {
+                diagnostics.push(WorkspaceDiagnostic {
+                    path: root.to_path_buf(),
+                    status: DeploymentStatus::Error,
+                    error: WorkspaceError::Local(error),
+                });
+            }
         }
     }
 
@@ -1001,6 +1043,30 @@ fn local_candidate_for_binding<'a>(
                     && normalized_path_key(&source.path) == normalized_path_key(&target.path)
             })
     })
+}
+
+fn local_matches_center(
+    candidate: &MatchedLocalSkill,
+    binding: &DeploymentBinding,
+    center: &CentralSkillSnapshot,
+) -> bool {
+    if candidate.scanned.content_hash != center.version.content_hash {
+        return false;
+    }
+    match binding.deployment_mode {
+        DeploymentMode::Copy => true,
+        DeploymentMode::Link => candidate
+            .scanned
+            .link_target
+            .as_ref()
+            .is_some_and(|target| paths_refer_to_same_location(target, &center.installed.location)),
+    }
+}
+
+fn paths_refer_to_same_location(left: &Path, right: &Path) -> bool {
+    let resolved_left = fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
+    let resolved_right = fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
+    normalized_path_key(&resolved_left) == normalized_path_key(&resolved_right)
 }
 
 fn normalize_binding_target(path: &Path) -> Result<PathBuf, WorkspaceError> {

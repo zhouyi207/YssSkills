@@ -15,8 +15,8 @@ mod operations;
 mod watcher;
 
 pub use operations::{
-    copy_skill, delete_skill, link_skill, ExistingDestination, LinkKind, LocalOperation,
-    OperationResult,
+    copy_skill, delete_link, delete_skill, link_skill, link_target, remove_broken_links,
+    ExistingDestination, LocalOperation, OperationResult, PlatformLinker,
 };
 pub use watcher::{WatchChange, WatchManager, WatchTarget, WatchTargetKind};
 
@@ -94,6 +94,9 @@ pub enum LocalError {
         path: PathBuf,
     },
     DestinationExists {
+        path: PathBuf,
+    },
+    NotLink {
         path: PathBuf,
     },
     PathConflict {
@@ -187,6 +190,13 @@ impl fmt::Display for LocalError {
             Self::DestinationExists { path } => {
                 write!(formatter, "destination already exists: {}", path.display())
             }
+            Self::NotLink { path } => {
+                write!(
+                    formatter,
+                    "path is not a symbolic link or junction: {}",
+                    path.display()
+                )
+            }
             Self::PathConflict { source, target } => write!(
                 formatter,
                 "source and destination paths conflict: {} and {}",
@@ -272,6 +282,7 @@ impl std::error::Error for LocalError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScannedSkill {
     pub path: PathBuf,
+    pub link_target: Option<PathBuf>,
     pub marker: SkillMarker,
     pub marker_path: PathBuf,
     pub marker_modified_at: Option<SystemTime>,
@@ -341,9 +352,11 @@ pub fn read_skill(path: &Path) -> Result<ScannedSkill, LocalError> {
         .ok()
         .and_then(|metadata| metadata.modified().ok());
     let content_hash = hash_directory(path)?;
+    let link_target = link_target(path)?;
 
     Ok(ScannedSkill {
         path: path.to_path_buf(),
+        link_target,
         marker,
         marker_path,
         marker_modified_at,

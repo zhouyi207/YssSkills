@@ -1,4 +1,9 @@
-use std::{fmt, path::PathBuf, str::FromStr};
+use std::{ffi::OsStr, fmt, path::PathBuf, str::FromStr};
+
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
 
 use thiserror::Error;
 use uuid::Uuid;
@@ -33,6 +38,8 @@ pub fn classify_skill_marker(file_name: &str) -> Option<SkillMarker> {
 pub struct SkillId(Uuid);
 
 impl SkillId {
+    const DIRECTORY_NAMESPACE: Uuid = Uuid::from_u128(0x4dc978d0_9654_4f4e_8626_f0dfbe2d48e7);
+
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -45,6 +52,22 @@ impl SkillId {
         Uuid::parse_str(value.trim())
             .map(Self)
             .map_err(|_| SkillIdError::InvalidFormat)
+    }
+
+    pub fn from_directory_name(name: &OsStr) -> Self {
+        #[cfg(unix)]
+        let bytes = name.as_bytes().to_vec();
+
+        #[cfg(windows)]
+        let bytes = name
+            .encode_wide()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+
+        #[cfg(not(any(unix, windows)))]
+        let bytes = name.to_string_lossy().as_bytes().to_vec();
+
+        Self(Uuid::new_v5(&Self::DIRECTORY_NAMESPACE, &bytes))
     }
 
     pub const fn as_uuid(self) -> Uuid {

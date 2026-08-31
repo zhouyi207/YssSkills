@@ -95,8 +95,7 @@ pub struct Workspace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeploymentMode {
     Copy,
-    SymbolicLink,
-    Junction,
+    Link,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

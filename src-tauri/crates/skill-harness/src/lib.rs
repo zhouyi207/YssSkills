@@ -1,5 +1,5 @@
 use std::{
-    fmt, io,
+    fmt, fs, io,
     path::{Component, Path, PathBuf},
 };
 
@@ -283,6 +283,26 @@ impl PathRule {
         Ok(existing)
     }
 
+    fn first_existing_directory(
+        &self,
+        environment: &HarnessEnvironment,
+    ) -> Result<Option<PathBuf>, HarnessError> {
+        for candidate in self.candidates(environment) {
+            match fs::metadata(&candidate) {
+                Ok(metadata) if metadata.is_dir() => return Ok(Some(candidate)),
+                Ok(_) => {}
+                Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(HarnessError::PathProbe {
+                        path: candidate,
+                        source,
+                    });
+                }
+            }
+        }
+        Ok(None)
+    }
+
     fn home_relative_path(&self) -> Option<&Path> {
         match self {
             Self::HomeRelative { path, .. } => Some(path),
@@ -318,6 +338,58 @@ pub struct HarnessAdapter {
 }
 
 impl HarnessAdapter {
+    pub fn with_agent_configuration(
+        &self,
+        id: HarnessId,
+        display_name: impl Into<String>,
+        global_skills_path: PathBuf,
+    ) -> Result<Self, HarnessError> {
+        let display_name = display_name.into();
+        let display_name = display_name.trim();
+        if display_name.is_empty() {
+            return Err(HarnessError::EmptyDisplayName);
+        }
+        if !global_skills_path.is_absolute() {
+            return Err(HarnessError::GlobalSkillsPathMustBeAbsolute {
+                path: global_skills_path.to_string_lossy().into_owned(),
+            });
+        }
+        let mut configured = self.clone();
+        configured.id = id;
+        configured.display_name = display_name.to_owned();
+        configured.global_skills_path = PathRule::Absolute(global_skills_path);
+        Ok(configured)
+    }
+
+    pub fn for_configured_agent(
+        id: HarnessId,
+        display_name: impl Into<String>,
+        global_skills_path: PathBuf,
+        category: HarnessCategory,
+    ) -> Result<Self, HarnessError> {
+        let display_name = display_name.into();
+        let display_name = display_name.trim();
+        if display_name.is_empty() {
+            return Err(HarnessError::EmptyDisplayName);
+        }
+        if !global_skills_path.is_absolute() {
+            return Err(HarnessError::GlobalSkillsPathMustBeAbsolute {
+                path: global_skills_path.to_string_lossy().into_owned(),
+            });
+        }
+        Ok(Self {
+            id,
+            display_name: display_name.to_owned(),
+            category,
+            global_skills_path: PathRule::Absolute(global_skills_path),
+            detection_path: None,
+            project_skills_path: None,
+            additional_global_discovery_paths: Vec::new(),
+            recursive_global_discovery: false,
+            custom: true,
+        })
+    }
+
     pub fn from_custom(definition: CustomHarnessDefinition) -> Result<Self, HarnessError> {
         let id = HarnessId::new(&definition.id)?;
         let display_name = definition.display_name.trim();
@@ -401,6 +473,14 @@ impl HarnessAdapter {
         self.additional_global_discovery_paths
             .iter()
             .filter_map(PathRule::home_relative_path)
+    }
+
+    pub fn existing_global_skills_dir(
+        &self,
+        environment: &HarnessEnvironment,
+    ) -> Result<Option<PathBuf>, HarnessError> {
+        self.global_skills_path
+            .first_existing_directory(environment)
     }
 
     pub fn resolve_locations(
@@ -1064,6 +1144,12 @@ pub struct HarnessRegistry {
 }
 
 impl HarnessRegistry {
+    pub fn empty() -> Self {
+        Self {
+            adapters: Vec::new(),
+        }
+    }
+
     pub fn with_builtins() -> Self {
         Self {
             adapters: default_harnesses(),

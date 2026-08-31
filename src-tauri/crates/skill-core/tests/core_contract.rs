@@ -113,6 +113,17 @@ fn skill_id_is_opaque_and_parseable() {
 }
 
 #[test]
+fn skill_id_is_stable_for_a_catalog_directory_name() {
+    let first = SkillId::from_directory_name(std::ffi::OsStr::new("example-skill"));
+    let same = SkillId::from_directory_name(std::ffi::OsStr::new("example-skill"));
+    let different = SkillId::from_directory_name(std::ffi::OsStr::new("other-skill"));
+
+    assert_eq!(first, same);
+    assert_ne!(first, different);
+    assert_eq!(SkillId::parse(&first.to_string()).unwrap(), first);
+}
+
+#[test]
 fn installed_skill_keeps_identity_independent_from_location_and_content() {
     let id = SkillId::new();
     let first_hash =

@@ -283,6 +283,10 @@ impl LocalSkillPort for RecordingLocal {
     fn delete(&self, target: &Path) -> Result<OperationResult, LocalError> {
         self.inner.delete(target)
     }
+
+    fn remove_broken_links(&self, root: &Path) -> Result<Vec<PathBuf>, LocalError> {
+        self.inner.remove_broken_links(root)
+    }
 }
 
 struct CatalogState {
@@ -415,7 +419,7 @@ fn scanned_version(scanned: &ScannedSkill) -> SkillVersion {
 
 fn center_snapshot(fixture: &TestFixture) -> CentralSkillSnapshot {
     let path = fixture.center_skill.as_ref().unwrap();
-    let scanned = SystemLocalSkillPort.read(path).unwrap();
+    let scanned = SystemLocalSkillPort::default().read(path).unwrap();
     CentralSkillSnapshot {
         installed: InstalledSkill {
             id: SkillId::new(),
@@ -493,7 +497,7 @@ impl CentralCatalogPort for FakeCatalog {
             skill_local::ExistingDestination::Replace,
         )
         .map_err(CatalogFailure::local_operation)?;
-        let imported = SystemLocalSkillPort
+        let imported = SystemLocalSkillPort::default()
             .read(&destination)
             .map_err(CatalogFailure::local_operation)?;
         let snapshot = CentralSkillSnapshot {
@@ -534,7 +538,7 @@ impl CentralCatalogPort for FakeCatalog {
             skill_local::ExistingDestination::Replace,
         )
         .map_err(CatalogFailure::local_operation)?;
-        let updated = SystemLocalSkillPort
+        let updated = SystemLocalSkillPort::default()
             .read(&existing.installed.location)
             .map_err(CatalogFailure::local_operation)?;
         let snapshot = CentralSkillSnapshot {
@@ -1568,7 +1572,7 @@ fn system_local_port_copies_and_reads_a_skill() {
     let root = tempdir().unwrap();
     let source = write_skill(&root.path().join("source"), "source");
     let target = root.path().join("target");
-    let local = SystemLocalSkillPort;
+    let local = SystemLocalSkillPort::default();
 
     local
         .deploy(&source, &target, DeploymentMode::Copy)
@@ -1578,40 +1582,19 @@ fn system_local_port_copies_and_reads_a_skill() {
     assert!(report.skills.iter().any(|skill| skill.path == target));
 }
 
-#[cfg(windows)]
 #[test]
-fn system_local_port_deploys_a_junction() {
+fn system_local_port_deploys_a_platform_link() {
     let root = tempdir().unwrap();
     let source = write_skill(&root.path().join("source"), "source");
     let target = root.path().join("target");
-    let local = SystemLocalSkillPort;
+    let local = SystemLocalSkillPort::default();
 
     local
-        .deploy(&source, &target, DeploymentMode::Junction)
+        .deploy(&source, &target, DeploymentMode::Link)
         .unwrap();
 
     let report = local.scan(root.path(), ScanMode::Flat).unwrap();
     assert!(report.skills.iter().any(|skill| skill.path == target));
-}
-
-#[cfg(not(windows))]
-#[test]
-fn system_local_port_rejects_junction_on_non_windows() {
-    let root = tempdir().unwrap();
-    let source = write_skill(&root.path().join("source"), "source");
-    let target = root.path().join("target");
-    let local = SystemLocalSkillPort;
-
-    let error = local
-        .deploy(&source, &target, DeploymentMode::Junction)
-        .unwrap_err();
-
-    assert!(matches!(
-        error,
-        skill_local::LocalError::UnsupportedOperation {
-            operation: "junction"
-        }
-    ));
 }
 
 fn custom_adapter(
@@ -1646,7 +1629,7 @@ fn linked_resolution(
         &workspace,
         &HarnessRegistry::with_builtins(),
         &HarnessEnvironment::new("C:/home", None),
-        DeploymentMode::SymbolicLink,
+        DeploymentMode::Link,
     )
 }
 
@@ -1663,13 +1646,8 @@ fn target_resolution_linked_workspace_uses_a_stable_logical_harness_id() {
     let registry = HarnessRegistry::with_builtins();
     let environment = HarnessEnvironment::new("C:/home", None);
 
-    let resolution = resolve_workspace(
-        &workspace,
-        &registry,
-        &environment,
-        DeploymentMode::SymbolicLink,
-    )
-    .unwrap();
+    let resolution =
+        resolve_workspace(&workspace, &registry, &environment, DeploymentMode::Link).unwrap();
 
     assert_eq!(resolution.targets.len(), 1);
     assert_eq!(
@@ -1729,7 +1707,7 @@ fn target_resolution_agents_uses_capabilities_and_deduplicates_discovery_roots()
         &workspace,
         &HarnessRegistry::with_builtins(),
         &environment,
-        DeploymentMode::SymbolicLink,
+        DeploymentMode::Link,
     )
     .unwrap();
 
@@ -1787,13 +1765,8 @@ fn target_resolution_project_uses_a_custom_project_relative_path() {
     };
     let environment = HarnessEnvironment::new(temp.path().join("home"), None);
 
-    let resolution = resolve_workspace(
-        &workspace,
-        &registry,
-        &environment,
-        DeploymentMode::Junction,
-    )
-    .unwrap();
+    let resolution =
+        resolve_workspace(&workspace, &registry, &environment, DeploymentMode::Link).unwrap();
 
     assert_eq!(resolution.targets.len(), 1);
     assert_eq!(resolution.discovery_roots.len(), 0);
@@ -1808,10 +1781,7 @@ fn target_resolution_project_uses_a_custom_project_relative_path() {
     );
     assert_eq!(resolution.targets[0].role, TargetRole::Primary);
     assert_eq!(resolution.targets[0].scan_mode, ScanMode::Recursive);
-    assert_eq!(
-        resolution.targets[0].deployment_mode,
-        DeploymentMode::Junction
-    );
+    assert_eq!(resolution.targets[0].deployment_mode, DeploymentMode::Link);
 }
 
 #[test]

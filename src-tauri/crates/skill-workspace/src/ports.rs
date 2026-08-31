@@ -2,8 +2,8 @@ use std::path::Path;
 
 use skill_core::SkillId;
 use skill_local::{
-    copy_skill, delete_skill, link_skill, read_skill, scan_directory, ExistingDestination,
-    LinkKind, LocalError, OperationResult, ScanMode, ScanReport, ScannedSkill,
+    copy_skill, delete_skill, read_skill, remove_broken_links, scan_directory, ExistingDestination,
+    LocalError, OperationResult, PlatformLinker, ScanMode, ScanReport, ScannedSkill,
 };
 
 use crate::{
@@ -21,6 +21,7 @@ pub trait LocalSkillPort {
         mode: DeploymentMode,
     ) -> Result<OperationResult, LocalError>;
     fn delete(&self, target: &Path) -> Result<OperationResult, LocalError>;
+    fn remove_broken_links(&self, root: &Path) -> Result<Vec<std::path::PathBuf>, LocalError>;
 }
 
 impl<T> LocalSkillPort for &T
@@ -47,10 +48,30 @@ where
     fn delete(&self, target: &Path) -> Result<OperationResult, LocalError> {
         <T as LocalSkillPort>::delete(*self, target)
     }
+
+    fn remove_broken_links(&self, root: &Path) -> Result<Vec<std::path::PathBuf>, LocalError> {
+        <T as LocalSkillPort>::remove_broken_links(*self, root)
+    }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SystemLocalSkillPort;
+#[derive(Debug, Clone, Copy)]
+pub struct SystemLocalSkillPort {
+    platform_linker: PlatformLinker,
+}
+
+impl SystemLocalSkillPort {
+    pub fn for_current_platform() -> Self {
+        Self {
+            platform_linker: PlatformLinker::detect(),
+        }
+    }
+}
+
+impl Default for SystemLocalSkillPort {
+    fn default() -> Self {
+        Self::for_current_platform()
+    }
+}
 
 impl LocalSkillPort for SystemLocalSkillPort {
     fn scan(&self, root: &Path, mode: ScanMode) -> Result<ScanReport, LocalError> {
@@ -69,23 +90,19 @@ impl LocalSkillPort for SystemLocalSkillPort {
     ) -> Result<OperationResult, LocalError> {
         match mode {
             DeploymentMode::Copy => copy_skill(source, target, ExistingDestination::Replace),
-            DeploymentMode::SymbolicLink => link_skill(
-                source,
-                target,
-                LinkKind::Symbolic,
-                ExistingDestination::Replace,
-            ),
-            DeploymentMode::Junction => link_skill(
-                source,
-                target,
-                LinkKind::Junction,
-                ExistingDestination::Replace,
-            ),
+            DeploymentMode::Link => {
+                self.platform_linker
+                    .link(source, target, ExistingDestination::Replace)
+            }
         }
     }
 
     fn delete(&self, target: &Path) -> Result<OperationResult, LocalError> {
         delete_skill(target)
+    }
+
+    fn remove_broken_links(&self, root: &Path) -> Result<Vec<std::path::PathBuf>, LocalError> {
+        remove_broken_links(root)
     }
 }
 
