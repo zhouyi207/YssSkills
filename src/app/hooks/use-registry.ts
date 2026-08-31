@@ -19,7 +19,7 @@ export function useRegistry() {
   const dataRef = useRef<RegistryResultDto | null>(null);
   const lastAttemptRef = useRef<RegistryRequest>({ mode: "leaderboard" });
 
-  const execute = useCallback(async (request: RegistryRequest) => {
+  const execute = useCallback(async (request: RegistryRequest, force = false) => {
     lastAttemptRef.current = request;
     const currentRequest = ++requestId.current;
     if (dataRef.current) {
@@ -33,7 +33,9 @@ export function useRegistry() {
       const result =
         request.mode === "search"
           ? await registryService.searchRegistry({ query: request.query, limit: DEFAULT_LIMIT })
-          : await registryService.getRegistryLeaderboard({ leaderboard: "allTime" });
+          : await (force
+              ? registryService.refreshRegistryLeaderboard({ leaderboard: "allTime" })
+              : registryService.getRegistryLeaderboard({ leaderboard: "allTime" }));
       if (requestId.current === currentRequest) {
         dataRef.current = result;
         setData(result);
@@ -82,8 +84,8 @@ export function useRegistry() {
     if (current?.mode === "search") {
       return execute({ mode: "search", query: current.query });
     }
-    return loadLeaderboard();
-  }, [execute, loadLeaderboard]);
+    return execute({ mode: "leaderboard" }, true);
+  }, [execute]);
 
   const retry = useCallback(() => execute(lastAttemptRef.current), [execute]);
 

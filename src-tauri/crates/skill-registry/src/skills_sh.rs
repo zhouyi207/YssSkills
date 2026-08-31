@@ -286,6 +286,21 @@ fn validate_empty_error_fields(
     object: &Map<String, Value>,
     kind: ResponseKind,
 ) -> Result<(), RegistryError> {
+    validate_error_fields(object, kind, false)
+}
+
+fn validate_rsc_error_fields(
+    object: &Map<String, Value>,
+    kind: ResponseKind,
+) -> Result<(), RegistryError> {
+    validate_error_fields(object, kind, true)
+}
+
+fn validate_error_fields(
+    object: &Map<String, Value>,
+    kind: ResponseKind,
+    accept_rsc_undefined: bool,
+) -> Result<(), RegistryError> {
     for field in ["error", "errors"] {
         let Some(value) = object.get(field) else {
             continue;
@@ -293,7 +308,9 @@ fn validate_empty_error_fields(
 
         let is_empty_sentinel = match value {
             Value::Null => true,
-            Value::String(value) => value.trim().is_empty(),
+            Value::String(value) => {
+                value.trim().is_empty() || (accept_rsc_undefined && value == "$undefined")
+            }
             Value::Array(value) => value.is_empty(),
             Value::Object(_) | Value::Bool(_) | Value::Number(_) => false,
         };
@@ -881,7 +898,7 @@ fn find_rsc_skill_array(value: &Value) -> Result<Option<&[Value]>, RegistryError
     let Some(object) = value.as_object() else {
         return Ok(None);
     };
-    validate_empty_error_fields(object, ResponseKind::Leaderboard)?;
+    validate_rsc_error_fields(object, ResponseKind::Leaderboard)?;
 
     let Some(props_value) = object.get("props") else {
         return Ok(None);
@@ -892,7 +909,7 @@ fn find_rsc_skill_array(value: &Value) -> Result<Option<&[Value]>, RegistryError
             kind: ResponseKind::Leaderboard,
             message: "RSC props must be an object".to_owned(),
         })?;
-    validate_empty_error_fields(props, ResponseKind::Leaderboard)?;
+    validate_rsc_error_fields(props, ResponseKind::Leaderboard)?;
 
     let Some(page_props_value) = props.get("pageProps") else {
         return Ok(None);
@@ -904,7 +921,7 @@ fn find_rsc_skill_array(value: &Value) -> Result<Option<&[Value]>, RegistryError
                 kind: ResponseKind::Leaderboard,
                 message: "RSC props.pageProps must be an object".to_owned(),
             })?;
-    validate_empty_error_fields(page_props, ResponseKind::Leaderboard)?;
+    validate_rsc_error_fields(page_props, ResponseKind::Leaderboard)?;
 
     find_explicit_skill_array(page_props)
 }
@@ -1097,7 +1114,7 @@ fn find_rsc_tuple_skill_array(tuple: &[Value]) -> Result<Option<&[Value]>, Regis
 fn find_rsc_props_skill_array(
     props: &Map<String, Value>,
 ) -> Result<Option<&[Value]>, RegistryError> {
-    validate_empty_error_fields(props, ResponseKind::Leaderboard)?;
+    validate_rsc_error_fields(props, ResponseKind::Leaderboard)?;
     if let Some(array) = find_explicit_skill_array(props)? {
         return Ok(Some(array));
     }
@@ -1112,7 +1129,7 @@ fn find_rsc_props_skill_array(
                 kind: ResponseKind::Leaderboard,
                 message: "RSC props.pageProps must be an object".to_owned(),
             })?;
-    validate_empty_error_fields(page_props, ResponseKind::Leaderboard)?;
+    validate_rsc_error_fields(page_props, ResponseKind::Leaderboard)?;
     find_explicit_skill_array(page_props)
 }
 

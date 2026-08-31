@@ -131,6 +131,16 @@ const leaderboardResult = {
   skills: [],
 };
 
+const registrySkill = {
+  id: { source: "owner/repository", skillId: "example" },
+  name: "Example",
+  installs: 42,
+  sourceKind: "github",
+  official: false,
+  detailsUrl: "https://skills.sh/owner/repository/example",
+  rank: 1,
+};
+
 const settings = {
   catalogRoot: path,
 };
@@ -138,6 +148,7 @@ const settings = {
 describe("IPC services", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    registryService.invalidateLeaderboardCache();
   });
 
   it("uses the backend command names and request envelope", async () => {
@@ -222,6 +233,32 @@ describe("IPC services", () => {
         }),
       }),
     );
+  });
+
+  it("silently preloads and reuses the registry leaderboard request", async () => {
+    invokeMock.mockResolvedValueOnce(leaderboardResult);
+
+    registryService.preloadRegistry();
+
+    await expect(
+      registryService.getRegistryLeaderboard({ leaderboard: "allTime" }),
+    ).resolves.toEqual(leaderboardResult);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("get_registry_leaderboard", {
+      request: { leaderboard: "allTime" },
+    });
+  });
+
+  it("bypasses the registry cache for an explicit refresh", async () => {
+    const refreshed = { ...leaderboardResult, skills: [registrySkill] };
+    invokeMock.mockResolvedValueOnce(leaderboardResult).mockResolvedValueOnce(refreshed);
+
+    await registryService.getRegistryLeaderboard({ leaderboard: "allTime" });
+
+    await expect(
+      registryService.refreshRegistryLeaderboard({ leaderboard: "allTime" }),
+    ).resolves.toEqual(refreshed);
+    expect(invokeMock).toHaveBeenCalledTimes(2);
   });
 
   it("reconciles the agents workspace through its reported workspace id", async () => {

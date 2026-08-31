@@ -533,6 +533,18 @@ fn leaderboard_parser_accepts_next_data_and_current_rsc_objects() {
 }
 
 #[test]
+fn leaderboard_parser_accepts_next_router_undefined_error_sentinels() {
+    let rsc = r#"
+      <script>self.__next_f.push([1,"1:[\"$\",\"$L1\",null,{\"error\":\"$undefined\",\"errorStyles\":\"$undefined\"}]\n2:[\"$\",\"$L2\",null,{\"initialSkills\":[{\"source\":\"vercel-labs/skills\",\"skillId\":\"find-skills\",\"name\":\"find-skills\",\"installs\":42}]}]"])</script>
+    "#;
+
+    let skills = parse_leaderboard_html(rsc).expect("Next router sentinels should not be errors");
+
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].id.to_string(), "vercel-labs/skills/find-skills");
+}
+
+#[test]
 fn leaderboard_parser_rejects_unrelated_next_arrays_but_accepts_explicit_empty_payload() {
     let invalid = r#"
         <script id="__NEXT_DATA__" type="application/json">

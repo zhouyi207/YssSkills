@@ -354,6 +354,8 @@ adapter，接入 skills.sh 的查询和 Git/GitHub source reference 解析；它
   `self.__next_f.push` RSC record stream。RSC payload 按十六进制 `id:JSON` record 读取，
   跳过 `I[...]` 等非 JSON React record，只接受 React tuple 的明确 props object 中的
   `initialSkills|skills|items`（同时兼容既有的 `1:{"props":{"pageProps":...}}` fixture）；
+  RSC router props 中的 `error: "$undefined"` 是 React transport sentinel，不作为 registry
+  error；普通 JSON/search error envelope 仍不接受这个 sentinel；
   `__NEXT_DATA__` 只接受真实 script 标签的 `id` 属性，RSC marker 只接受 script 内容代码，
   不从 HTML comment、属性值、JavaScript string/comment/regex 或任意 HTML/script 对象和数组猜测
   Skill。
@@ -677,6 +679,11 @@ IPC DTO
 直接 `invoke`。前端 store 只保存 UI 状态、缓存或用于展示的 projection，
 不复制 Rust 侧的 Skill、磁盘或部署权威状态。路由状态由路由管理，临时交互
 状态留在内存，跨会话偏好才进入适当的持久化层。
+
+应用根组件启动后静默预取 all-time registry leaderboard；registry service 对相同
+leaderboard 合并 in-flight 请求，并只缓存成功结果五分钟。显式 Refresh 绕过缓存，预取失败
+不产生 Toast 且不缓存失败。Registry 页面挂载时复用启动请求或有效结果；search 始终按用户
+请求访问远端。
 
 当前前端入口由 `src/app/main.tsx` 加载 `src/app/App.tsx`，由
 `src/app/routes.tsx` 创建 `createHashRouter`。共享的 `AppLayout` 提供 shadcn
