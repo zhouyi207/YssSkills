@@ -9,6 +9,7 @@ import {
   rebuildCatalogIndexResponseDtoSchema,
   scanImportFolderResponseDtoSchema,
   skillSetDtoSchema,
+  updateCatalogSkillsResponseDtoSchema,
   type CatalogSkillDetailDto,
   type CatalogSkillsResponseDto,
   type DeleteCatalogSkillsRequestDto,
@@ -26,6 +27,8 @@ import {
   type SkillIdRequestDto,
   type SkillSetDto,
   type UpdateSkillSetRequestDto,
+  type UpdateCatalogSkillsRequestDto,
+  type UpdateCatalogSkillsResponseDto,
 } from "@/shared/types/skills";
 
 export const skillsService = {
@@ -75,5 +78,13 @@ export const skillsService = {
 
   deleteSkillSets(request: DeleteSkillSetsRequestDto): Promise<DeleteSkillSetsResponseDto> {
     return invokeCommand("delete_skill_sets", deleteSkillSetsResponseDtoSchema, { request });
+  },
+
+  updateCatalogSkills(
+    request: UpdateCatalogSkillsRequestDto,
+  ): Promise<UpdateCatalogSkillsResponseDto> {
+    return invokeCommand("update_catalog_skills", updateCatalogSkillsResponseDtoSchema, {
+      request,
+    });
   },
 };

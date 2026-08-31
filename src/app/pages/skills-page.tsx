@@ -59,6 +59,16 @@ function skillMatchesQuery(skill: CatalogSkillSummaryDto, normalizedQuery: strin
     .includes(normalizedQuery);
 }
 
+function skillCanUpdate(skill: CatalogSkillSummaryDto) {
+  const metadata = skill.sourceMetadata;
+  const sourceType = metadata?.sourceType?.trim().toLowerCase();
+  return (
+    (sourceType === "github" || sourceType === "git") &&
+    Boolean(metadata?.sourceUrl?.trim()) &&
+    Boolean(metadata?.skillPath?.trim())
+  );
+}
+
 function SkillList({
   skills,
   selectedSkillIds,
@@ -298,6 +308,8 @@ export function SkillsPage() {
     updateSkillSet,
     deleteSkillSets,
     clearSetMutationError,
+    isUpdatingSkills,
+    updateCatalogSkills,
   } = useCatalogSkills();
   const [query, setQuery] = useState("");
   const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(() => new Set());
@@ -352,6 +364,15 @@ export function SkillsPage() {
     visibleSkillIds.length > 0 && visibleSkillIds.every((skillId) => selectedSkillIds.has(skillId));
   const allVisibleSetsSelected =
     visibleSetIds.length > 0 && visibleSetIds.every((setId) => selectedSetIds.has(setId));
+  const selectedSetSkillIds = useMemo(
+    () => new Set(sets.filter((set) => selectedSetIds.has(set.id)).flatMap((set) => set.skillIds)),
+    [selectedSetIds, sets],
+  );
+  const hasUpdateableSelection = skills.some(
+    (skill) =>
+      skillCanUpdate(skill) &&
+      (activeTab === "item" ? selectedSkillIds.has(skill.id) : selectedSetSkillIds.has(skill.id)),
+  );
   const viewingSkill = skills.find((skill) => skill.id === viewingSkillId) ?? null;
   const visibleDetail = detail?.skill.id === viewingSkillId ? detail : null;
   const filteredImportCandidates = useMemo(() => {
@@ -494,6 +515,30 @@ export function SkillsPage() {
     toast.success(
       `Deleted ${deletedIds.length} skill${deletedIds.length === 1 ? "" : "s"} from the catalog and Agent directories.`,
     );
+  };
+
+  const handleUpdate = async () => {
+    const outcome = await updateCatalogSkills({
+      skillIds: activeTab === "item" ? Array.from(selectedSkillIds) : [],
+      setIds: activeTab === "set" ? Array.from(selectedSetIds) : [],
+    });
+    if (!outcome) {
+      return;
+    }
+    const summary = [
+      `${outcome.updatedSkillIds.length} updated`,
+      `${outcome.unchangedSkillIds.length} unchanged`,
+      `${outcome.unavailableSkillIds.length} without update metadata`,
+      `${outcome.failures.length} failed`,
+    ].join(" · ");
+    if (outcome.unavailableSkillIds.length > 0 || outcome.failures.length > 0) {
+      const firstFailure = outcome.failures[0];
+      toast.warning(
+        firstFailure ? `${summary}. ${firstFailure.name}: ${firstFailure.message}` : summary,
+      );
+    } else {
+      toast.success(summary);
+    }
   };
 
   const openCreateSetDialog = () => {
@@ -704,12 +749,24 @@ export function SkillsPage() {
               type="button"
               variant="outline"
               size="sm"
-              aria-label="Update unavailable"
-              title="Skill updates are unavailable"
-              disabled
+              aria-label="Update selected Skills"
+              title={
+                hasUpdateableSelection
+                  ? "Update selected lock-backed Skills"
+                  : "Select at least one Skill with source metadata"
+              }
+              aria-busy={isUpdatingSkills}
+              disabled={
+                !hasUpdateableSelection ||
+                isUpdatingSkills ||
+                isDeleting ||
+                isDeletingSets ||
+                isSavingSet
+              }
+              onClick={() => void handleUpdate()}
             >
               <RiRefreshLine aria-hidden="true" data-icon="inline-start" />
-              Update
+              {isUpdatingSkills ? "Updating…" : "Update"}
             </Button>
             <Button
               type="button"
@@ -718,6 +775,7 @@ export function SkillsPage() {
               aria-label={activeTab === "item" ? "Delete selected skills" : "Delete selected sets"}
               disabled={
                 !hasActiveSelection ||
+                isUpdatingSkills ||
                 isDeleting ||
                 isDeletingSets ||
                 isScanningImport ||
@@ -748,6 +806,7 @@ export function SkillsPage() {
                 disabled={
                   isLoading ||
                   isRefreshing ||
+                  isUpdatingSkills ||
                   isDeleting ||
                   isScanningImport ||
                   isImporting ||
@@ -768,6 +827,7 @@ export function SkillsPage() {
                 disabled={
                   selectedSkillIds.size === 0 ||
                   isLoading ||
+                  isUpdatingSkills ||
                   isRefreshing ||
                   isDeleting ||
                   isScanningImport ||
@@ -786,7 +846,7 @@ export function SkillsPage() {
               variant="outline"
               size="sm"
               aria-label="Add Skill Set"
-              disabled={isSavingSet || isDeletingSets || skills.length === 0}
+              disabled={isUpdatingSkills || isSavingSet || isDeletingSets || skills.length === 0}
               onClick={openCreateSetDialog}
             >
               <RiAddLine aria-hidden="true" data-icon="inline-start" />
@@ -802,6 +862,7 @@ export function SkillsPage() {
             disabled={
               isLoading ||
               isRefreshing ||
+              isUpdatingSkills ||
               isDeleting ||
               isScanningImport ||
               isImporting ||

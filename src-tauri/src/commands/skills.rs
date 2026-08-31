@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use tauri::State;
 
 use crate::{
+    application::fetch_catalog_skill_updates,
     commands::{parse_request, run_application},
     ipc::{
         CatalogSkillDetailDto, CatalogSkillsResponseDto, CreateSkillSetRequestDto,
@@ -10,7 +11,8 @@ use crate::{
         DeleteSkillSetsResponseDto, ExportCatalogSkillsRequestDto, ExportCatalogSkillsResponseDto,
         ImportLocalSkillsRequestDto, ImportLocalSkillsResponseDto, IpcError,
         RebuildCatalogIndexResponseDto, ScanImportFolderRequestDto, ScanImportFolderResponseDto,
-        SkillIdRequestDto, SkillSetDto, UpdateSkillSetRequestDto,
+        SkillIdRequestDto, SkillSetDto, UpdateCatalogSkillsRequestDto,
+        UpdateCatalogSkillsResponseDto, UpdateSkillSetRequestDto,
     },
     state::AppState,
 };
@@ -69,6 +71,27 @@ pub async fn delete_skill_sets(
             .map(|set_id| set_id.to_string())
             .collect(),
     })
+}
+
+#[tauri::command]
+pub async fn update_catalog_skills(
+    request: Option<serde_json::Value>,
+    state: State<'_, AppState>,
+) -> Result<UpdateCatalogSkillsResponseDto, IpcError> {
+    let request: UpdateCatalogSkillsRequestDto = parse_request(request)?;
+    let application = state.application.clone();
+    let plan = run_application(application.clone(), move |application| {
+        application.plan_catalog_skill_updates(request.skill_ids, request.set_ids)
+    })
+    .await?;
+    let fetched = tauri::async_runtime::spawn_blocking(move || fetch_catalog_skill_updates(plan))
+        .await
+        .map_err(IpcError::blocking_task_failed)?;
+    let outcome = run_application(application, move |application| {
+        application.apply_catalog_skill_updates(fetched)
+    })
+    .await?;
+    Ok(outcome.into())
 }
 
 #[tauri::command]

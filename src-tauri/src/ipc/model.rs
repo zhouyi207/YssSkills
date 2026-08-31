@@ -16,7 +16,8 @@ use crate::{
     application::{
         AddDetectedAgentsOutcome, AgentDetectionDiagnostic, AgentDetectionOutcome, AppSettings,
         CatalogIndexFreshness, CatalogIndexRebuildOutcome, CatalogSkillDetail, CatalogSkillList,
-        CatalogSkillSummary, CopyProjectAgentSkillsInput, CopyProjectAgentSkillsOutcome,
+        CatalogSkillSummary, CatalogSkillUpdateFailure, CatalogSkillUpdateFailureKind,
+        CatalogSkillUpdateOutcome, CopyProjectAgentSkillsInput, CopyProjectAgentSkillsOutcome,
         CreateWorkspaceInput, CreateWorkspaceKind, DashboardOverview, DeleteAgentsOutcome,
         DeleteProjectAgentsOutcome, DetectedAgent, ExportSkillsOutcome, HarnessOverview,
         HarnessProbe, ImportCandidate, ImportFolderDiagnostic, ImportFolderPreview,
@@ -1021,6 +1022,83 @@ pub struct DeleteSkillSetsRequestDto {
 #[serde(rename_all = "camelCase")]
 pub struct DeleteSkillSetsResponseDto {
     pub deleted_set_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateCatalogSkillsRequestDto {
+    pub skill_ids: Vec<String>,
+    pub set_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCatalogSkillsResponseDto {
+    pub updated_skill_ids: Vec<String>,
+    pub unchanged_skill_ids: Vec<String>,
+    pub unavailable_skill_ids: Vec<String>,
+    pub failures: Vec<CatalogSkillUpdateFailureDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogSkillUpdateFailureDto {
+    pub skill_id: String,
+    pub name: String,
+    pub kind: CatalogSkillUpdateFailureKindDto,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CatalogSkillUpdateFailureKindDto {
+    FetchSource,
+    InvalidRemoteSkill,
+    ChangedDuringUpdate,
+    WouldRemoveFiles,
+    CatalogUpdate,
+}
+
+impl From<CatalogSkillUpdateOutcome> for UpdateCatalogSkillsResponseDto {
+    fn from(value: CatalogSkillUpdateOutcome) -> Self {
+        Self {
+            updated_skill_ids: value.updated.into_iter().map(|id| id.to_string()).collect(),
+            unchanged_skill_ids: value
+                .unchanged
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
+            unavailable_skill_ids: value
+                .unavailable
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
+            failures: value.failures.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<CatalogSkillUpdateFailure> for CatalogSkillUpdateFailureDto {
+    fn from(value: CatalogSkillUpdateFailure) -> Self {
+        Self {
+            skill_id: value.skill_id.to_string(),
+            name: value.name,
+            kind: value.kind.into(),
+            message: value.message,
+        }
+    }
+}
+
+impl From<CatalogSkillUpdateFailureKind> for CatalogSkillUpdateFailureKindDto {
+    fn from(value: CatalogSkillUpdateFailureKind) -> Self {
+        match value {
+            CatalogSkillUpdateFailureKind::FetchSource => Self::FetchSource,
+            CatalogSkillUpdateFailureKind::InvalidRemoteSkill => Self::InvalidRemoteSkill,
+            CatalogSkillUpdateFailureKind::ChangedDuringUpdate => Self::ChangedDuringUpdate,
+            CatalogSkillUpdateFailureKind::WouldRemoveFiles => Self::WouldRemoveFiles,
+            CatalogSkillUpdateFailureKind::CatalogUpdate => Self::CatalogUpdate,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]

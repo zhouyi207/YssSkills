@@ -15,6 +15,8 @@ import type {
   ScanImportFolderResponseDto,
   SkillSetDto,
   UpdateSkillSetRequestDto,
+  UpdateCatalogSkillsRequestDto,
+  UpdateCatalogSkillsResponseDto,
 } from "@/shared/types/skills";
 import type { WorkspaceReconcileOutcomeDto } from "@/shared/types/workspaces";
 import { unexpectedClientError, useServiceResource } from "./use-service-resource";
@@ -37,6 +39,8 @@ export function useCatalogSkills() {
   const [setMutationError, setSetMutationError] = useState<IpcError | null>(null);
   const [isSavingSet, setIsSavingSet] = useState(false);
   const [isDeletingSets, setIsDeletingSets] = useState(false);
+  const [updateError, setUpdateError] = useState<IpcError | null>(null);
+  const [isUpdatingSkills, setIsUpdatingSkills] = useState(false);
   const detailRequestId = useRef(0);
 
   const refresh = useCallback(async (): Promise<WorkspaceReconcileOutcomeDto | null> => {
@@ -210,9 +214,29 @@ export function useCatalogSkills() {
 
   const clearSetMutationError = useCallback(() => setSetMutationError(null), []);
 
+  const updateCatalogSkills = useCallback(
+    async (
+      request: UpdateCatalogSkillsRequestDto,
+    ): Promise<UpdateCatalogSkillsResponseDto | null> => {
+      setUpdateError(null);
+      setIsUpdatingSkills(true);
+      try {
+        const response = await skillsService.updateCatalogSkills(request);
+        await resource.refresh();
+        return response;
+      } catch (caught: unknown) {
+        setUpdateError(isIpcError(caught) ? caught : unexpectedClientError(caught));
+        return null;
+      } finally {
+        setIsUpdatingSkills(false);
+      }
+    },
+    [resource.refresh],
+  );
+
   return {
     ...resource,
-    error: deleteError ?? refreshError ?? resource.error,
+    error: updateError ?? deleteError ?? refreshError ?? resource.error,
     isRefreshing: isReconcilingAgents || resource.isRefreshing,
     refresh,
     skills: resource.data?.skills ?? [],
@@ -242,5 +266,8 @@ export function useCatalogSkills() {
     updateSkillSet,
     deleteSkillSets,
     clearSetMutationError,
+    updateError,
+    isUpdatingSkills,
+    updateCatalogSkills,
   };
 }

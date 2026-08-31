@@ -1,4 +1,5 @@
 mod error;
+mod git_checkout;
 mod model;
 mod skills_sh;
 mod source;
@@ -7,6 +8,7 @@ pub use error::{
     QueryValidationError, RegistryError, ResponseKind, RetryAfter, TransportKind,
     TransportOperation,
 };
+pub use git_checkout::{GitCheckout, GitCheckoutError};
 pub use model::{
     Leaderboard, LeaderboardResult, LeaderboardType, RegistrySkillId, RegistrySkillIdError,
     RemoteSkillSummary, SearchResult, SourceKind,

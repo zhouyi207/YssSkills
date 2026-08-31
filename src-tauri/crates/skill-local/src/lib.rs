@@ -11,9 +11,11 @@ use skill_core::{parse_skill_document, ContentHash, SkillDocument, SkillMarker, 
 
 use walkdir::{DirEntry as WalkDirEntry, WalkDir};
 
+mod differences;
 mod operations;
 mod watcher;
 
+pub use differences::removed_skill_paths;
 pub use operations::{
     copy_skill, delete_link, delete_skill, link_skill, link_target, remove_broken_links,
     ExistingDestination, LocalOperation, OperationResult, PlatformLinker,

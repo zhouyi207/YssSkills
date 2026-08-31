@@ -7,16 +7,17 @@ use std::{
 };
 
 use chrono::Local;
-use skill_core::{SkillId, SkillIdError, SkillSetId, SkillSetIdError};
+use skill_core::{ContentHash, SkillId, SkillIdError, SkillSetId, SkillSetIdError};
 use skill_harness::{
     DetectionStatus, HarnessAdapter, HarnessCapabilities, HarnessCategory, HarnessEnvironment,
     HarnessError, HarnessId, HarnessRegistry,
 };
 use skill_index::{IndexState, SkillLock, SkillLockEntry, SkillLockError};
 use skill_local::{
-    copy_skill, link_skill, link_target, ExistingDestination, LocalError, ScanDiagnostic, ScanMode,
-    ScanReport,
+    copy_skill, link_skill, link_target, read_skill, removed_skill_paths, ExistingDestination,
+    LocalError, ScanDiagnostic, ScanMode, ScanReport, ScannedSkill,
 };
+use skill_registry::GitCheckout;
 use skill_workspace::{
     choose_newest_local, resolve_workspace, CatalogFailure, CentralCatalogPort,
     CentralSkillSnapshot, DeploymentMode, DeploymentStatus, LocalCandidate, LocalSkillPort,
@@ -948,6 +949,196 @@ impl Application {
             }
         }
         Ok(skill_ids)
+    }
+
+    pub fn plan_catalog_skill_updates(
+        &self,
+        raw_skill_ids: Vec<String>,
+        raw_set_ids: Vec<String>,
+    ) -> Result<CatalogSkillUpdatePlan, ApplicationError> {
+        if raw_skill_ids.is_empty() && raw_set_ids.is_empty() {
+            return Err(ApplicationError::InvalidRequest {
+                field: "skillIds/setIds",
+                reason: "at least one selection is required",
+            });
+        }
+        let snapshots = self.catalog.list_catalog_skills()?;
+        let snapshots_by_id = snapshots
+            .into_iter()
+            .map(|snapshot| (snapshot.installed.id, snapshot))
+            .collect::<HashMap<_, _>>();
+        let mut requested = Vec::new();
+        for raw_skill_id in raw_skill_ids {
+            let skill_id =
+                SkillId::parse(&raw_skill_id).map_err(ApplicationError::InvalidSkillId)?;
+            if !snapshots_by_id.contains_key(&skill_id) {
+                return Err(PersistenceError::NotFound {
+                    entity: "catalog_skill",
+                    id: raw_skill_id,
+                }
+                .into());
+            }
+            push_unique(&mut requested, skill_id);
+        }
+
+        if !raw_set_ids.is_empty() {
+            let sets = self
+                .catalog
+                .list_skill_sets()?
+                .into_iter()
+                .map(|set| (set.id, set))
+                .collect::<HashMap<_, _>>();
+            for raw_set_id in raw_set_ids {
+                let set_id =
+                    SkillSetId::parse(&raw_set_id).map_err(ApplicationError::InvalidSkillSetId)?;
+                let set = sets
+                    .get(&set_id)
+                    .ok_or_else(|| PersistenceError::NotFound {
+                        entity: "skill_set",
+                        id: raw_set_id,
+                    })?;
+                for skill_id in &set.skill_ids {
+                    if snapshots_by_id.contains_key(skill_id) {
+                        push_unique(&mut requested, *skill_id);
+                    }
+                }
+            }
+        }
+
+        let skill_lock = self.skill_lock()?;
+        let mut items = Vec::new();
+        let mut unavailable = Vec::new();
+        for skill_id in requested {
+            let snapshot =
+                snapshots_by_id
+                    .get(&skill_id)
+                    .ok_or_else(|| PersistenceError::NotFound {
+                        entity: "catalog_skill",
+                        id: skill_id.to_string(),
+                    })?;
+            let Some(source_metadata) = source_metadata_for_snapshot(&skill_lock, snapshot) else {
+                unavailable.push(skill_id);
+                continue;
+            };
+            let Some((source_url, reference, skill_path)) =
+                update_source_from_metadata(&source_metadata)
+            else {
+                unavailable.push(skill_id);
+                continue;
+            };
+            items.push(CatalogSkillUpdatePlanItem {
+                skill_id,
+                name: snapshot.installed.metadata.name().to_owned(),
+                expected_content_hash: snapshot.version.content_hash,
+                source_metadata,
+                source_url,
+                reference,
+                skill_path,
+            });
+        }
+        Ok(CatalogSkillUpdatePlan { items, unavailable })
+    }
+
+    pub fn apply_catalog_skill_updates(
+        &mut self,
+        fetched: CatalogSkillUpdateFetchOutcome,
+    ) -> Result<CatalogSkillUpdateOutcome, ApplicationError> {
+        let CatalogSkillUpdateFetchOutcome {
+            candidates,
+            unavailable,
+            mut failures,
+            checkouts,
+        } = fetched;
+        let skill_lock = self.skill_lock()?;
+        let mut updated = Vec::new();
+        let mut unchanged = Vec::new();
+
+        for candidate in candidates {
+            let item = candidate.item;
+            let current = match self.catalog.catalog_skill(item.skill_id) {
+                Ok((snapshot, _)) => snapshot,
+                Err(error) => {
+                    failures.push(update_failure(
+                        &item,
+                        CatalogSkillUpdateFailureKind::CatalogUpdate,
+                        error,
+                    ));
+                    continue;
+                }
+            };
+            if current.version.content_hash != item.expected_content_hash {
+                failures.push(CatalogSkillUpdateFailure {
+                    skill_id: item.skill_id,
+                    name: item.name,
+                    kind: CatalogSkillUpdateFailureKind::ChangedDuringUpdate,
+                    message: "the catalog Skill changed while its source was being fetched"
+                        .to_owned(),
+                });
+                continue;
+            }
+            let current_source = source_metadata_for_snapshot(&skill_lock, &current);
+            if current_source
+                .as_ref()
+                .is_none_or(|current| !same_update_source(current, &item.source_metadata))
+            {
+                failures.push(CatalogSkillUpdateFailure {
+                    skill_id: item.skill_id,
+                    name: item.name,
+                    kind: CatalogSkillUpdateFailureKind::ChangedDuringUpdate,
+                    message: "the Skill source metadata changed while it was being fetched"
+                        .to_owned(),
+                });
+                continue;
+            }
+            match removed_skill_paths(&current.installed.location, &candidate.scanned.path) {
+                Ok(paths) if !paths.is_empty() => {
+                    let removed = paths
+                        .iter()
+                        .take(20)
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    failures.push(CatalogSkillUpdateFailure {
+                        skill_id: item.skill_id,
+                        name: item.name,
+                        kind: CatalogSkillUpdateFailureKind::WouldRemoveFiles,
+                        message: format!("update held back because it would remove: {removed}"),
+                    });
+                    continue;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    failures.push(update_failure(
+                        &item,
+                        CatalogSkillUpdateFailureKind::CatalogUpdate,
+                        error,
+                    ));
+                    continue;
+                }
+            }
+            if current.version.content_hash == candidate.scanned.content_hash {
+                unchanged.push(item.skill_id);
+                continue;
+            }
+            match self
+                .catalog
+                .update_from_local(&item.skill_id, &candidate.scanned)
+            {
+                Ok(_) => updated.push(item.skill_id),
+                Err(error) => failures.push(update_failure(
+                    &item,
+                    CatalogSkillUpdateFailureKind::CatalogUpdate,
+                    error,
+                )),
+            }
+        }
+        drop(checkouts);
+        Ok(CatalogSkillUpdateOutcome {
+            updated,
+            unchanged,
+            unavailable,
+            failures,
+        })
     }
 
     pub fn rebuild_catalog_index(
@@ -2210,6 +2401,114 @@ fn source_metadata_for_snapshot(
         .cloned()
 }
 
+pub fn fetch_catalog_skill_updates(plan: CatalogSkillUpdatePlan) -> CatalogSkillUpdateFetchOutcome {
+    let mut groups = BTreeMap::<(String, Option<String>), Vec<CatalogSkillUpdatePlanItem>>::new();
+    for item in plan.items {
+        groups
+            .entry((item.source_url.clone(), item.reference.clone()))
+            .or_default()
+            .push(item);
+    }
+
+    let mut candidates = Vec::new();
+    let mut failures = Vec::new();
+    let mut checkouts = Vec::new();
+    for ((source_url, reference), items) in groups {
+        let mut checkout = match GitCheckout::clone(&source_url, reference.as_deref()) {
+            Ok(checkout) => checkout,
+            Err(error) => {
+                for item in items {
+                    failures.push(update_failure(
+                        &item,
+                        CatalogSkillUpdateFailureKind::FetchSource,
+                        &error,
+                    ));
+                }
+                continue;
+            }
+        };
+        for item in items {
+            let skill_directory = match checkout.skill_directory(&item.skill_path) {
+                Ok(path) => path,
+                Err(error) => {
+                    failures.push(update_failure(
+                        &item,
+                        CatalogSkillUpdateFailureKind::InvalidRemoteSkill,
+                        error,
+                    ));
+                    continue;
+                }
+            };
+            match read_skill(&skill_directory) {
+                Ok(scanned) => candidates.push(CatalogSkillUpdateCandidate { item, scanned }),
+                Err(error) => failures.push(update_failure(
+                    &item,
+                    CatalogSkillUpdateFailureKind::InvalidRemoteSkill,
+                    error,
+                )),
+            }
+        }
+        checkouts.push(checkout);
+    }
+
+    CatalogSkillUpdateFetchOutcome {
+        candidates,
+        unavailable: plan.unavailable,
+        failures,
+        checkouts,
+    }
+}
+
+fn update_source_from_metadata(
+    metadata: &SkillLockEntry,
+) -> Option<(String, Option<String>, String)> {
+    let source_type = metadata.source_type.as_deref()?.trim();
+    if !source_type.eq_ignore_ascii_case("github") && !source_type.eq_ignore_ascii_case("git") {
+        return None;
+    }
+    let source_url = metadata.source_url.as_deref()?.trim();
+    let skill_path = metadata.skill_path.as_deref()?.trim();
+    if source_url.is_empty() || skill_path.is_empty() {
+        return None;
+    }
+    let reference = metadata
+        .reference
+        .as_deref()
+        .map(str::trim)
+        .filter(|reference| !reference.is_empty())
+        .map(str::to_owned);
+    Some((source_url.to_owned(), reference, skill_path.to_owned()))
+}
+
+fn same_update_source(left: &SkillLockEntry, right: &SkillLockEntry) -> bool {
+    match (
+        update_source_from_metadata(left),
+        update_source_from_metadata(right),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn update_failure(
+    item: &CatalogSkillUpdatePlanItem,
+    kind: CatalogSkillUpdateFailureKind,
+    error: impl std::fmt::Display,
+) -> CatalogSkillUpdateFailure {
+    CatalogSkillUpdateFailure {
+        skill_id: item.skill_id,
+        name: item.name.clone(),
+        kind,
+        message: error.to_string(),
+    }
+}
+
+fn push_unique(skill_ids: &mut Vec<SkillId>, skill_id: SkillId) {
+    if !skill_ids.contains(&skill_id) {
+        skill_ids.push(skill_id);
+    }
+}
+
 fn skill_set_summary(stored: StoredSkillSet) -> SkillSetSummary {
     SkillSetSummary {
         id: stored.id,
@@ -2223,6 +2522,60 @@ pub struct SkillSetSummary {
     pub id: SkillSetId,
     pub name: String,
     pub skill_ids: Vec<SkillId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CatalogSkillUpdatePlan {
+    pub items: Vec<CatalogSkillUpdatePlanItem>,
+    pub unavailable: Vec<SkillId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CatalogSkillUpdatePlanItem {
+    pub skill_id: SkillId,
+    pub name: String,
+    pub expected_content_hash: ContentHash,
+    pub source_metadata: SkillLockEntry,
+    pub source_url: String,
+    pub reference: Option<String>,
+    pub skill_path: String,
+}
+
+pub struct CatalogSkillUpdateCandidate {
+    item: CatalogSkillUpdatePlanItem,
+    scanned: ScannedSkill,
+}
+
+pub struct CatalogSkillUpdateFetchOutcome {
+    candidates: Vec<CatalogSkillUpdateCandidate>,
+    unavailable: Vec<SkillId>,
+    failures: Vec<CatalogSkillUpdateFailure>,
+    checkouts: Vec<GitCheckout>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CatalogSkillUpdateOutcome {
+    pub updated: Vec<SkillId>,
+    pub unchanged: Vec<SkillId>,
+    pub unavailable: Vec<SkillId>,
+    pub failures: Vec<CatalogSkillUpdateFailure>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CatalogSkillUpdateFailure {
+    pub skill_id: SkillId,
+    pub name: String,
+    pub kind: CatalogSkillUpdateFailureKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogSkillUpdateFailureKind {
+    FetchSource,
+    InvalidRemoteSkill,
+    ChangedDuringUpdate,
+    WouldRemoveFiles,
+    CatalogUpdate,
 }
 
 fn merge_reconcile_reports(current: &mut ReconcileReport, mut next: ReconcileReport) {
@@ -2569,6 +2922,129 @@ mod tests {
         assert!(alpha_path.join("SKILL.md").is_file());
         assert!(beta_path.join("SKILL.md").is_file());
         assert_eq!(reopened.list_catalog_skills_view().unwrap().skills.len(), 2);
+    }
+
+    #[test]
+    fn set_update_plan_expands_members_and_only_applies_lock_backed_skills() {
+        let root = tempdir().unwrap();
+        let lock_path = root.path().join("home/.agents/.skill-lock.json");
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        fs::write(
+            &lock_path,
+            r#"{
+              "version": 3,
+              "skills": {
+                "alpha": {
+                  "source": "acme/skills",
+                  "sourceType": "github",
+                  "sourceUrl": "https://github.com/acme/skills.git",
+                  "skillPath": "skills/alpha/SKILL.md"
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        let mut application = test_application(root.path());
+        let skills_root = application.catalog.catalog_root().join("skills");
+        write_test_skill(&skills_root.join("alpha"), "Alpha");
+        write_test_skill(&skills_root.join("beta"), "Beta");
+        application.rebuild_catalog_index().unwrap();
+        let catalog = application.list_catalog_skills_view().unwrap();
+        let alpha_id = catalog
+            .skills
+            .iter()
+            .find(|skill| skill.snapshot.installed.metadata.name() == "Alpha")
+            .unwrap()
+            .snapshot
+            .installed
+            .id;
+        let beta_id = catalog
+            .skills
+            .iter()
+            .find(|skill| skill.snapshot.installed.metadata.name() == "Beta")
+            .unwrap()
+            .snapshot
+            .installed
+            .id;
+        let set = application
+            .create_skill_set(
+                "Both".to_owned(),
+                vec![alpha_id.to_string(), beta_id.to_string()],
+            )
+            .unwrap();
+
+        let plan = application
+            .plan_catalog_skill_updates(Vec::new(), vec![set.id.to_string()])
+            .unwrap();
+
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].skill_id, alpha_id);
+        assert_eq!(plan.unavailable, vec![beta_id]);
+
+        let remote = tempdir().unwrap();
+        let remote_skill = remote.path().join("alpha");
+        fs::create_dir_all(&remote_skill).unwrap();
+        fs::write(
+            remote_skill.join("SKILL.md"),
+            "---\nname: Alpha\ndescription: test skill\n---\nupdated body\n",
+        )
+        .unwrap();
+        let scanned = read_skill(&remote_skill).unwrap();
+        let fetched = CatalogSkillUpdateFetchOutcome {
+            candidates: vec![CatalogSkillUpdateCandidate {
+                item: plan.items[0].clone(),
+                scanned,
+            }],
+            unavailable: plan.unavailable,
+            failures: Vec::new(),
+            checkouts: Vec::new(),
+        };
+
+        let outcome = application.apply_catalog_skill_updates(fetched).unwrap();
+
+        assert_eq!(outcome.updated, vec![alpha_id]);
+        assert_eq!(outcome.unavailable, vec![beta_id]);
+        assert!(outcome.failures.is_empty());
+        let (_, updated) = application.catalog.catalog_skill(alpha_id).unwrap();
+        assert_eq!(updated.document.body(), "updated body\n");
+        assert!(skills_root.join("beta/SKILL.md").is_file());
+
+        fs::write(skills_root.join("alpha/user-notes.txt"), "preserve me").unwrap();
+        application.rebuild_catalog_index().unwrap();
+        let held_plan = application
+            .plan_catalog_skill_updates(vec![alpha_id.to_string()], Vec::new())
+            .unwrap();
+        let held_remote = tempdir().unwrap();
+        let held_remote_skill = held_remote.path().join("alpha");
+        fs::create_dir_all(&held_remote_skill).unwrap();
+        fs::write(
+            held_remote_skill.join("SKILL.md"),
+            "---\nname: Alpha\ndescription: test skill\n---\nnewer body\n",
+        )
+        .unwrap();
+        let held_fetched = CatalogSkillUpdateFetchOutcome {
+            candidates: vec![CatalogSkillUpdateCandidate {
+                item: held_plan.items[0].clone(),
+                scanned: read_skill(&held_remote_skill).unwrap(),
+            }],
+            unavailable: Vec::new(),
+            failures: Vec::new(),
+            checkouts: Vec::new(),
+        };
+
+        let held = application
+            .apply_catalog_skill_updates(held_fetched)
+            .unwrap();
+
+        assert!(held.updated.is_empty());
+        assert_eq!(held.failures.len(), 1);
+        assert_eq!(
+            held.failures[0].kind,
+            CatalogSkillUpdateFailureKind::WouldRemoveFiles
+        );
+        assert!(skills_root.join("alpha/user-notes.txt").is_file());
+        let (_, preserved) = application.catalog.catalog_skill(alpha_id).unwrap();
+        assert_eq!(preserved.document.body(), "updated body\n");
     }
 
     fn associate_test_skill(

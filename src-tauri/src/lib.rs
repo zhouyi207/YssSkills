@@ -48,6 +48,7 @@ pub fn run() {
             commands::skills::create_skill_set,
             commands::skills::update_skill_set,
             commands::skills::delete_skill_sets,
+            commands::skills::update_catalog_skills,
             commands::workspaces::get_workspaces_overview,
             commands::workspaces::detect_agents,
             commands::workspaces::add_detected_agents,

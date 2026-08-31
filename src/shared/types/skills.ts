@@ -237,6 +237,41 @@ export const deleteSkillSetsResponseDtoSchema = z
 
 export type DeleteSkillSetsResponseDto = z.infer<typeof deleteSkillSetsResponseDtoSchema>;
 
+export const updateCatalogSkillsRequestDtoSchema = z
+  .object({
+    skillIds: z.array(z.string()),
+    setIds: z.array(z.string()),
+  })
+  .strict();
+
+export type UpdateCatalogSkillsRequestDto = z.infer<typeof updateCatalogSkillsRequestDtoSchema>;
+
+export const catalogSkillUpdateFailureDtoSchema = z
+  .object({
+    skillId: z.string(),
+    name: z.string(),
+    kind: z.enum([
+      "fetchSource",
+      "invalidRemoteSkill",
+      "changedDuringUpdate",
+      "wouldRemoveFiles",
+      "catalogUpdate",
+    ]),
+    message: z.string(),
+  })
+  .strict();
+
+export const updateCatalogSkillsResponseDtoSchema = z
+  .object({
+    updatedSkillIds: z.array(z.string()),
+    unchangedSkillIds: z.array(z.string()),
+    unavailableSkillIds: z.array(z.string()),
+    failures: z.array(catalogSkillUpdateFailureDtoSchema),
+  })
+  .strict();
+
+export type UpdateCatalogSkillsResponseDto = z.infer<typeof updateCatalogSkillsResponseDtoSchema>;
+
 export const rebuildCatalogIndexResponseDtoSchema = z
   .object({
     inserted: z.number().int().nonnegative(),

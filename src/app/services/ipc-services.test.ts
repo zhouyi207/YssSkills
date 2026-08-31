@@ -74,6 +74,13 @@ const skillSet = {
   skillIds: [catalogSkill.id],
 };
 
+const updateCatalogSkillsOutcome = {
+  updatedSkillIds: [catalogSkill.id],
+  unchangedSkillIds: [],
+  unavailableSkillIds: [],
+  failures: [],
+};
+
 const rebuildCatalogIndexOutcome = {
   inserted: 1,
   updated: 0,
@@ -171,6 +178,7 @@ describe("IPC services", () => {
       .mockResolvedValueOnce(skillSet)
       .mockResolvedValueOnce(skillSet)
       .mockResolvedValueOnce({ deletedSetIds: [skillSet.id] })
+      .mockResolvedValueOnce(updateCatalogSkillsOutcome)
       .mockResolvedValueOnce({
         agentsWorkspaceId: workspace.id,
         harnesses: [],
@@ -189,6 +197,7 @@ describe("IPC services", () => {
     const createSetRequest = { name: skillSet.name, skillIds: skillSet.skillIds };
     const updateSetRequest = { setId: skillSet.id, ...createSetRequest };
     const deleteSetsRequest = { setIds: [skillSet.id] };
+    const updateSkillsRequest = { skillIds: [catalogSkill.id], setIds: [] };
     const createRequest = {
       name: "Project",
       kind: { kind: "project" as const, root: "/project" },
@@ -206,6 +215,7 @@ describe("IPC services", () => {
     await skillsService.createSkillSet(createSetRequest);
     await skillsService.updateSkillSet(updateSetRequest);
     await skillsService.deleteSkillSets(deleteSetsRequest);
+    await skillsService.updateCatalogSkills(updateSkillsRequest);
     await workspacesService.getWorkspacesOverview();
     await workspacesService.createWorkspace(createRequest);
     await workspacesService.observeWorkspace(workspaceRequest);
@@ -224,6 +234,7 @@ describe("IPC services", () => {
       ["create_skill_set", { request: createSetRequest }],
       ["update_skill_set", { request: updateSetRequest }],
       ["delete_skill_sets", { request: deleteSetsRequest }],
+      ["update_catalog_skills", { request: updateSkillsRequest }],
       ["get_workspaces_overview"],
       ["create_workspace", { request: createRequest }],
       ["observe_workspace", { request: workspaceRequest }],

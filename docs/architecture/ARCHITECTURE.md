@@ -36,7 +36,7 @@ YssSkills 是一个通过 Tauri 提供桌面界面的 Skill 管理器。它需�
   worker、显式 IPC DTO、结构化错误映射和 Tauri commands；
 - 前端 Dashboard、Skills、Workspaces、Registry、Settings 页面通过 application hooks 和
   typed services 调用真实 commands，所有业务 `invoke` 集中在 IPC client；
-- registry install/materialization、Workspace watcher 自动调度、周期性 reconcile、自定义
+- registry install、Workspace watcher 自动调度、周期性 reconcile、自定义
   Harness 持久化以及 Workspace 编辑/删除仍未实现，界面不得伪造这些能力。
 
 本文后续章节以代码中的当前实现为准。新增能力应进入已有责任边界，不要为了匹配目录图
@@ -370,6 +370,10 @@ adapter，接入 skills.sh 的查询和 Git/GitHub source reference 解析；它
   只有在最终 clone URL 是真正 GitHub host 且包含合法 owner/repo path 的 HTTPS/SSH/scp
   source 时才成立，`SourceReference::WellKnown` 保留 opaque 输入，其他 source kind 返回
   typed error。解析只产生 source reference，不执行 Git 或文件系统操作；
+- `GitCheckout` 为 lock-backed catalog update 提供受控 Git adapter：使用结构化参数执行
+  shallow clone，禁用交互提示并设置 90 秒上限；按 lock 的 repository-relative
+  `skillPath` 校验边界，再通过 `git archive` 只物化 tracked regular files/directories，拒绝
+  symlink、hardlink、special entry 与路径逃逸。多个 Skill 共用同一 source/ref checkout；
 - `RegistryError`、`SourceParseError` 等 typed errors，区分 query/limit（包括 legacy
   endpoint 的最小 query 长度）、带 operation 和有限 kind 的运输/超时、HTTP status/认证/
   限流及其 retry-after、响应过大/配置上限、fail-closed 的结构化响应错误和 source 安全/
@@ -386,17 +390,16 @@ adapter，接入 skills.sh 的查询和 Git/GitHub source reference 解析；它
 
 它不负责：
 
-- clone、checkout、解压、查找 checkout 中的 Skill 目录或把远程内容写入本机；
-- 调用 `skill-local` 复制/链接/安装；
+- 把 checkout 直接写入中央库，或调用 `skill-local` 复制/链接/安装；
 - 选择 Agents/Project/Linked 目标、创建 `InstalledSkill` 或持有 central catalog；
 - 将远程文本错误转换成前端可解析的错误字符串。
 
 远程响应是不可信输入。client/parser 必须验证响应结构、对 `error/errors` 的非法或非空
 sentinel fail closed、限制资源规模、使用合理超时，并避免把 proxy 凭据、token、完整请求体
 或 Skill 内容写入日志。blocking client 不在 crate 内启动 runtime；根 Tauri command 在
-`spawn_blocking` 中执行网络请求。detail endpoint 和远程内容 materialization/install 仍未
-实现；需要物化时，应用层先消费 source reference，再把受控 staging 输入交给
-`skill-local`，registry 本身不拥有本地事实。
+`spawn_blocking` 中执行网络请求。detail endpoint 和 Registry install 仍未实现；Git checkout
+仅作为 update staging 输入，应用层复核 catalog/version/source 后才把它交给 `skill-local`，
+registry 本身不拥有本地事实。
 
 ### 4.5 `skill-workspace`：部署与同步编排
 
@@ -607,23 +610,24 @@ Harness 生成不同目标，具体是否可部署由 Harness capabilities 决�
 
 ### 6.2 远程 source reference 与本地物化边界
 
-当前远程查询已接入 Tauri command 和前端 service，但远程内容物化仍只实现了 crate
-之间的能力边界：
+当前远程查询和 lock-backed catalog update 已接入 Tauri command 与前端 service：
 
 1. `skill-registry` 的 client/parser 返回 `RemoteSkillSummary`、`SearchResult` 或
    `LeaderboardResult`；它只保留远程身份和响应元数据。
-2. 调用方根据显式 `SourceKind` 消费 `skill-registry` 的 `GitSource` 或其他
-   `SourceReference`。GitHub tree 的 branch/subpath 解析仍是纯函数；registry 不
-   clone、checkout、解压或查找 Skill 目录。
-3. 更高层 application/materialization 用例负责在受控 staging 区执行下载、克隆、
-   checkout 或解压，并把物化输入及 provenance 交给下一层；该用例当前不在
-   `skill-registry` crate 中。
-4. `skill-local` 从 staging 输入读取、解析和 hash，并由更高层决定是否导入中央库或
-   执行本地操作；`skill-registry` 不调用 `skill-local`。
-5. `skill-workspace` 继续负责 Agents/Project/Linked 目标、绑定和部署收敛；远程
+2. Catalog update plan 只接受 `.agents/.skill-lock.json` 中同时具有受支持 `sourceType`、
+   `sourceUrl` 和 `skillPath` 的 Skill；Set selection 在后端展开为有序去重的 member SkillId。
+3. Tauri command 先在 application worker 中取得只读 plan，随后在 worker 外的
+   `spawn_blocking` 中按 `(sourceUrl, ref)` 分组调用 `GitCheckout`。Git subprocess 不持有应用
+   状态或数据库锁。
+4. `skill-local` 从受控 tracked-file staging 读取、解析和 hash；application worker 应用前重新
+   比对 catalog content hash 与 lock source identity。发生并发变化时该 Skill 失败而不覆盖。
+5. replacement 缺少当前非生成文件/目录时返回 `wouldRemoveFiles` 并 hold back；batch 中其他
+   Skill 可继续。内容相同返回 unchanged；无完整 lock metadata 返回 unavailable。
+6. 只有上述检查通过后才调用现有原子 `update_from_local` seam 更新中央库与派生索引。
+7. `skill-workspace` 继续负责 Agents/Project/Linked 目标、绑定和部署收敛；远程
    source reference 不直接变成 `InstalledSkill`、目标路径或本地事实。
 
-后续实现 materialization/install 时，仍应通过 service/command 和明确的应用用例接入，
+后续实现 Registry install 时，仍应通过 service/command 和明确的应用用例接入，
 而不是让前端或 command 直接执行 Git、解压或安装流程。
 
 ### 6.3 本地变化
@@ -734,6 +738,9 @@ Skills 页首次加载只读取 catalog；
 列表中的来源副标题来自 `.agents/.skill-lock.json` 的匹配 `source`，没有匹配 metadata 时留空；
 Set Tab 支持创建、编辑、多选和删除定义。创建/编辑 Dialog 使用与 Agent Skill picker 一致的
 紧凑 checkbox Skill 列表；Set 删除确认明确说明只删除定义，不删除后台 Skills；
+Update 只对 lock-backed、具有 Git/GitHub source URL 与 repository Skill path 的选择生效；Item
+Tab 支持单项/批量，Set Tab 把选中 Set ID 交给后端批量展开。结果区分 updated、unchanged、
+unavailable 和结构化 per-Skill failure，潜在文件删除会 hold back 而不覆盖；
 用户点击 Refresh 时，hook 通过 Workspace service 取得 Agents Workspace ID、显式调用
 reconcile；reconcile 在扫描前只删除各 Agent skills 根一级目录中目标已不存在的
 Junction/SymbolicLink，再重新读取 catalog，因此会把发现的 Agent Skill 导入中央库，并
