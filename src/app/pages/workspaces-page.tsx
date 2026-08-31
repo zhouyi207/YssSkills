@@ -15,6 +15,7 @@ import { useCatalogSkills } from "@/app/hooks/use-catalog-skills";
 import { useWorkspaces } from "@/app/hooks/use-workspaces";
 import { selectDirectory } from "@/app/services/directory-picker";
 import { formatIpcError, formatUnknownError } from "@/app/services/ipc-error-presentation";
+import { applySkillSetSelection } from "@/app/services/skill-set-selection";
 import { countWorkspaceReconcileIssues } from "@/app/services/workspaces-service";
 import { IpcErrorDetails } from "@/components/ipc-error-details";
 import { Badge } from "@/components/ui/badge";
@@ -42,7 +43,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import type { IpcError } from "@/shared/types/ipc";
-import type { CatalogSkillSummaryDto } from "@/shared/types/skills";
+import type { CatalogSkillSummaryDto, SkillSetDto } from "@/shared/types/skills";
 import type {
   DetectAgentsResponseDto,
   DetectedAgentDto,
@@ -334,6 +335,46 @@ function AgentSkillList({
   );
 }
 
+function AgentSkillSetList({
+  sets,
+  skillsById,
+  disabled,
+  onSelect,
+}: {
+  sets: ReadonlyArray<SkillSetDto>;
+  skillsById: ReadonlyMap<string, CatalogSkillSummaryDto>;
+  disabled: boolean;
+  onSelect: (set: SkillSetDto) => void;
+}) {
+  return (
+    <div role="list" className="flex flex-col p-1">
+      {sets.map((set) => {
+        const availableSkillNames = set.skillIds.flatMap((skillId) => {
+          const skill = skillsById.get(skillId);
+          return skill ? [skill.name] : [];
+        });
+        return (
+          <button
+            key={set.id}
+            type="button"
+            className="flex min-w-0 items-center justify-between gap-2 px-2 py-2 text-left hover:bg-muted disabled:cursor-default disabled:opacity-50"
+            disabled={disabled || availableSkillNames.length === 0}
+            onClick={() => onSelect(set)}
+          >
+            <span className="min-w-0 flex-1 truncate text-xs font-medium">{set.name}</span>
+            <span
+              className="max-w-64 shrink-0 truncate text-[0.65rem] text-muted-foreground"
+              title={availableSkillNames.join(", ")}
+            >
+              {availableSkillNames.length} skill{availableSkillNames.length === 1 ? "" : "s"}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function DetectedAgentList({
   agents,
   selectedDetectorIds,
@@ -435,6 +476,7 @@ export function WorkspacesPage() {
   const projectComboboxAnchor = useComboboxAnchor();
   const {
     skills: catalogSkills,
+    sets: skillSets,
     error: catalogSkillsError,
     isLoading: isCatalogSkillsLoading,
   } = useCatalogSkills();
@@ -491,6 +533,10 @@ export function WorkspacesPage() {
   const [editingAgentSkillTab, setEditingAgentSkillTab] = useState<AgentSkillTab>("item");
   const [syncingWorkspaceId, setSyncingWorkspaceId] = useState<string | null>(null);
   const normalizedQuery = query.trim().toLowerCase();
+  const catalogSkillsById = useMemo(
+    () => new Map(catalogSkills.map((skill) => [skill.id, skill])),
+    [catalogSkills],
+  );
 
   useEffect(() => {
     if (mutationError) {
@@ -788,6 +834,19 @@ export function WorkspacesPage() {
       }
       return next;
     });
+  };
+
+  const selectAgentSkillSet = (set: SkillSetDto) => {
+    const selection = applySkillSetSelection(
+      newAgentSkillIds,
+      set,
+      new Set(catalogSkillsById.keys()),
+    );
+    setNewAgentSkillIds(selection.selectedSkillIds);
+    setEditingAgentSkillTab(selection.activeTab);
+    toast.success(
+      `Selected ${set.skillIds.length} Skill${set.skillIds.length === 1 ? "" : "s"} from ${set.name}.`,
+    );
   };
 
   const handleSaveAgent = async (event: FormEvent<HTMLFormElement>) => {
@@ -1587,10 +1646,29 @@ export function WorkspacesPage() {
 
                     <TabsContent value="set" className="flex min-h-0 flex-1 flex-col">
                       <ScrollArea className="min-h-0 flex-1 border border-input">
-                        <EmptyState
-                          title="Skill sets unavailable"
-                          description="Skill set actions are not available yet."
-                        />
+                        {skillSets.length > 0 ? (
+                          <AgentSkillSetList
+                            sets={skillSets}
+                            skillsById={catalogSkillsById}
+                            disabled={isMutating}
+                            onSelect={selectAgentSkillSet}
+                          />
+                        ) : isCatalogSkillsLoading ? (
+                          <EmptyState
+                            title="Loading Skill Sets…"
+                            description="Reading the saved Skill Set definitions."
+                          />
+                        ) : catalogSkillsError ? (
+                          <ErrorNotice
+                            title="Unable to load Skill Sets"
+                            error={catalogSkillsError}
+                          />
+                        ) : (
+                          <EmptyState
+                            title="No Skill Sets"
+                            description="Create a Set on the Skills page first."
+                          />
+                        )}
                       </ScrollArea>
                     </TabsContent>
                   </Tabs>

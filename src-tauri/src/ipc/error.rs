@@ -117,6 +117,11 @@ impl From<ApplicationError> for IpcError {
                 "The workspace identifier is invalid.",
             )
             .with_context("reason", reason),
+            ApplicationError::InvalidSkillSetId(reason) => Self::new(
+                "skill_set.invalid_id",
+                "The Skill Set identifier is invalid.",
+            )
+            .with_context("reason", reason),
             ApplicationError::WorkspaceChangedDuringReconcile => Self::new(
                 "workspace.changed_during_reconcile",
                 "Workspace content changed while synchronization was being prepared.",

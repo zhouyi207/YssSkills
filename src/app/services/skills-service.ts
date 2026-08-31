@@ -3,14 +3,18 @@ import {
   catalogSkillDetailDtoSchema,
   catalogSkillsResponseDtoSchema,
   deleteCatalogSkillsResponseDtoSchema,
+  deleteSkillSetsResponseDtoSchema,
   exportCatalogSkillsResponseDtoSchema,
   importLocalSkillsResponseDtoSchema,
   rebuildCatalogIndexResponseDtoSchema,
   scanImportFolderResponseDtoSchema,
+  skillSetDtoSchema,
   type CatalogSkillDetailDto,
   type CatalogSkillsResponseDto,
   type DeleteCatalogSkillsRequestDto,
   type DeleteCatalogSkillsResponseDto,
+  type DeleteSkillSetsRequestDto,
+  type DeleteSkillSetsResponseDto,
   type ExportCatalogSkillsRequestDto,
   type ExportCatalogSkillsResponseDto,
   type ImportLocalSkillsRequestDto,
@@ -18,7 +22,10 @@ import {
   type RebuildCatalogIndexResponseDto,
   type ScanImportFolderRequestDto,
   type ScanImportFolderResponseDto,
+  type CreateSkillSetRequestDto,
   type SkillIdRequestDto,
+  type SkillSetDto,
+  type UpdateSkillSetRequestDto,
 } from "@/shared/types/skills";
 
 export const skillsService = {
@@ -56,5 +63,17 @@ export const skillsService = {
     return invokeCommand("delete_catalog_skills", deleteCatalogSkillsResponseDtoSchema, {
       request,
     });
+  },
+
+  createSkillSet(request: CreateSkillSetRequestDto): Promise<SkillSetDto> {
+    return invokeCommand("create_skill_set", skillSetDtoSchema, { request });
+  },
+
+  updateSkillSet(request: UpdateSkillSetRequestDto): Promise<SkillSetDto> {
+    return invokeCommand("update_skill_set", skillSetDtoSchema, { request });
+  },
+
+  deleteSkillSets(request: DeleteSkillSetsRequestDto): Promise<DeleteSkillSetsResponseDto> {
+    return invokeCommand("delete_skill_sets", deleteSkillSetsResponseDtoSchema, { request });
   },
 };

@@ -12,7 +12,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
-use skill_core::{InstalledSkill, SkillId, SkillSource};
+use skill_core::{InstalledSkill, SkillId, SkillSetId, SkillSource};
 use skill_harness::HarnessId;
 use skill_index::{
     IndexDiagnostic, IndexError, IndexState, IndexedSkill, ReconcileReport as IndexReconcileReport,
@@ -37,6 +37,13 @@ pub struct StoredWorkspace {
     pub name: String,
     pub workspace: Workspace,
     pub deployment_mode: DeploymentMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredSkillSet {
+    pub id: SkillSetId,
+    pub name: String,
+    pub skill_ids: Vec<SkillId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -440,6 +447,136 @@ impl PersistentCatalog {
                 entity: "workspace",
                 id: id.to_string(),
             })
+    }
+
+    pub fn list_skill_sets(&self) -> Result<Vec<StoredSkillSet>, PersistenceError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT skill_sets.set_id, skill_sets.display_name, skill_set_members.skill_id
+                 FROM skill_sets
+                 LEFT JOIN skill_set_members ON skill_set_members.set_id = skill_sets.set_id
+                 ORDER BY lower(skill_sets.display_name), skill_sets.set_id,
+                          skill_set_members.position",
+            )
+            .map_err(|source| PersistenceError::database("prepare_list_skill_sets", source))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(|source| PersistenceError::database("query_list_skill_sets", source))?;
+
+        let mut sets = Vec::<StoredSkillSet>::new();
+        for row in rows {
+            let (raw_set_id, name, raw_skill_id) =
+                row.map_err(|source| PersistenceError::database("decode_skill_set_row", source))?;
+            let set_id =
+                SkillSetId::parse(&raw_set_id).map_err(|_| PersistenceError::InvalidData {
+                    entity: "skill_sets",
+                    field: "set_id",
+                })?;
+            let needs_new_set = sets.last().is_none_or(|stored| stored.id != set_id);
+            if needs_new_set {
+                sets.push(StoredSkillSet {
+                    id: set_id,
+                    name,
+                    skill_ids: Vec::new(),
+                });
+            }
+            if let Some(raw_skill_id) = raw_skill_id {
+                let skill_id =
+                    SkillId::parse(&raw_skill_id).map_err(|_| PersistenceError::InvalidData {
+                        entity: "skill_set_members",
+                        field: "skill_id",
+                    })?;
+                if let Some(stored) = sets.last_mut() {
+                    stored.skill_ids.push(skill_id);
+                }
+            }
+        }
+        Ok(sets)
+    }
+
+    pub fn insert_skill_set(&mut self, stored: &StoredSkillSet) -> Result<(), PersistenceError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|source| PersistenceError::database("begin_insert_skill_set", source))?;
+        insert_skill_set_definition(&transaction, stored)?;
+        replace_skill_set_members(&transaction, stored.id, &stored.skill_ids)?;
+        transaction
+            .commit()
+            .map_err(|source| PersistenceError::database("commit_insert_skill_set", source))?;
+        Ok(())
+    }
+
+    pub fn update_skill_set(&mut self, stored: &StoredSkillSet) -> Result<(), PersistenceError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|source| PersistenceError::database("begin_update_skill_set", source))?;
+        let changed = transaction
+            .execute(
+                "UPDATE skill_sets SET display_name = ?1 WHERE set_id = ?2",
+                params![stored.name, stored.id.to_string()],
+            )
+            .map_err(|source| map_skill_set_constraint(source, &stored.name))?;
+        if changed == 0 {
+            return Err(PersistenceError::NotFound {
+                entity: "skill_set",
+                id: stored.id.to_string(),
+            });
+        }
+        transaction
+            .execute(
+                "DELETE FROM skill_set_members WHERE set_id = ?1",
+                [stored.id.to_string()],
+            )
+            .map_err(|source| PersistenceError::database("clear_skill_set_members", source))?;
+        replace_skill_set_members(&transaction, stored.id, &stored.skill_ids)?;
+        transaction
+            .commit()
+            .map_err(|source| PersistenceError::database("commit_update_skill_set", source))?;
+        Ok(())
+    }
+
+    pub fn delete_skill_sets(&mut self, set_ids: &[SkillSetId]) -> Result<(), PersistenceError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|source| PersistenceError::database("begin_delete_skill_sets", source))?;
+        for set_id in set_ids {
+            let changed = transaction
+                .execute(
+                    "DELETE FROM skill_sets WHERE set_id = ?1",
+                    [set_id.to_string()],
+                )
+                .map_err(|source| PersistenceError::database("delete_skill_set", source))?;
+            if changed == 0 {
+                return Err(PersistenceError::NotFound {
+                    entity: "skill_set",
+                    id: set_id.to_string(),
+                });
+            }
+        }
+        transaction
+            .commit()
+            .map_err(|source| PersistenceError::database("commit_delete_skill_sets", source))?;
+        Ok(())
+    }
+
+    pub fn remove_skill_from_sets(&mut self, skill_id: SkillId) -> Result<(), PersistenceError> {
+        self.connection
+            .execute(
+                "DELETE FROM skill_set_members WHERE skill_id = ?1",
+                [skill_id.to_string()],
+            )
+            .map_err(|source| PersistenceError::database("remove_skill_from_sets", source))?;
+        Ok(())
     }
 
     pub fn catalog_index_view(&self) -> Result<CatalogIndexView, PersistenceError> {
@@ -1017,10 +1154,83 @@ fn initialize_schema(connection: &mut Connection) -> Result<(), PersistenceError
     if !table_exists(&transaction, "app_settings")? {
         create_schema(&transaction)?;
     }
+    create_skill_set_tables(&transaction)?;
     transaction
         .commit()
         .map_err(|source| PersistenceError::database("commit_schema_initialization", source))?;
     Ok(())
+}
+
+fn create_skill_set_tables(transaction: &Transaction<'_>) -> Result<(), PersistenceError> {
+    transaction
+        .execute_batch(
+            r#"
+             CREATE TABLE IF NOT EXISTS skill_sets (
+                 set_id TEXT PRIMARY KEY NOT NULL,
+                 display_name TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS skill_set_members (
+                 set_id TEXT NOT NULL,
+                 skill_id TEXT NOT NULL,
+                 position INTEGER NOT NULL,
+                 PRIMARY KEY (set_id, skill_id),
+                 UNIQUE (set_id, position),
+                 FOREIGN KEY (set_id) REFERENCES skill_sets(set_id) ON DELETE CASCADE
+             );
+             CREATE UNIQUE INDEX IF NOT EXISTS skill_sets_display_name
+                 ON skill_sets(lower(display_name));
+             "#,
+        )
+        .map_err(|source| PersistenceError::database("create_skill_set_tables", source))?;
+    Ok(())
+}
+
+fn insert_skill_set_definition(
+    transaction: &Transaction<'_>,
+    stored: &StoredSkillSet,
+) -> Result<(), PersistenceError> {
+    transaction
+        .execute(
+            "INSERT INTO skill_sets (set_id, display_name) VALUES (?1, ?2)",
+            params![stored.id.to_string(), stored.name],
+        )
+        .map_err(|source| map_skill_set_constraint(source, &stored.name))?;
+    Ok(())
+}
+
+fn replace_skill_set_members(
+    transaction: &Transaction<'_>,
+    set_id: SkillSetId,
+    skill_ids: &[SkillId],
+) -> Result<(), PersistenceError> {
+    for (position, skill_id) in skill_ids.iter().enumerate() {
+        let position = i64::try_from(position).map_err(|_| PersistenceError::InvalidData {
+            entity: "skill_set_members",
+            field: "position",
+        })?;
+        transaction
+            .execute(
+                "INSERT INTO skill_set_members (set_id, skill_id, position)
+                 VALUES (?1, ?2, ?3)",
+                params![set_id.to_string(), skill_id.to_string(), position],
+            )
+            .map_err(|source| PersistenceError::database("insert_skill_set_member", source))?;
+    }
+    Ok(())
+}
+
+fn map_skill_set_constraint(source: rusqlite::Error, name: &str) -> PersistenceError {
+    match &source {
+        rusqlite::Error::SqliteFailure(error, _)
+            if error.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            PersistenceError::Conflict {
+                entity: "skill_set",
+                id: name.to_owned(),
+            }
+        }
+        _ => PersistenceError::database("write_skill_set", source),
+    }
 }
 
 fn table_exists(transaction: &Transaction<'_>, table: &str) -> Result<bool, PersistenceError> {
@@ -1368,6 +1578,33 @@ mod tests {
         assert_eq!(restored.name, project.name);
         assert_eq!(restored.workspace.kind, project.workspace.kind);
         assert_eq!(catalog.catalog_root(), catalog_root);
+    }
+
+    #[test]
+    fn existing_state_schema_adds_skill_set_tables_in_place() {
+        let root = tempdir().unwrap();
+        let database = root.path().join("state.sqlite3");
+        let mut connection = Connection::open(&database).unwrap();
+        let transaction = connection.transaction().unwrap();
+        create_schema(&transaction).unwrap();
+        transaction.commit().unwrap();
+        drop(connection);
+
+        let catalog = PersistentCatalog::open(&database, root.path().join("catalog")).unwrap();
+        assert!(catalog.list_skill_sets().unwrap().is_empty());
+        drop(catalog);
+
+        let connection = Connection::open(&database).unwrap();
+        for table in ["skill_sets", "skill_set_members"] {
+            let exists: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "missing migrated table {table}");
+        }
     }
 
     #[test]

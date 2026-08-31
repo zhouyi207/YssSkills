@@ -4,6 +4,7 @@ import {
   RiCheckboxMultipleLine,
   RiDeleteBinLine,
   RiDownloadLine,
+  RiEditLine,
   RiEyeLine,
   RiRefreshLine,
   RiSearchLine,
@@ -31,7 +32,11 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import type { CatalogSkillSummaryDto, ScanImportFolderResponseDto } from "@/shared/types/skills";
+import type {
+  CatalogSkillSummaryDto,
+  ScanImportFolderResponseDto,
+  SkillSetDto,
+} from "@/shared/types/skills";
 
 function formatSkillSource(skill: CatalogSkillSummaryDto) {
   return skill.sourceMetadata?.source ?? "";
@@ -134,10 +139,136 @@ function SkillList({
   );
 }
 
+function SkillSetList({
+  sets,
+  skillsById,
+  selectedSetIds,
+  onToggle,
+  onEdit,
+}: {
+  sets: SkillSetDto[];
+  skillsById: ReadonlyMap<string, CatalogSkillSummaryDto>;
+  selectedSetIds: ReadonlySet<string>;
+  onToggle: (setId: string, checked?: boolean) => void;
+  onEdit: (setId: string) => void;
+}) {
+  const keepCheckboxesVisible = selectedSetIds.size > 0;
+
+  return (
+    <div role="list" className="flex min-w-0 flex-col gap-2 text-xs/relaxed">
+      {sets.map((set) => {
+        const isSelected = selectedSetIds.has(set.id);
+        const memberNames = set.skillIds
+          .flatMap((skillId) => {
+            const skill = skillsById.get(skillId);
+            return skill ? [skill.name] : [];
+          })
+          .join(", ");
+
+        return (
+          <div
+            key={set.id}
+            role="button"
+            tabIndex={0}
+            aria-pressed={isSelected}
+            className="group/set-row mx-4 grid min-h-14 min-w-0 grid-cols-[1.5rem_minmax(0,1fr)_minmax(0,2fr)_2rem] items-center gap-3 border px-4 py-2 outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/50"
+            onClick={() => onToggle(set.id)}
+            onKeyDown={(event) => {
+              if (event.target !== event.currentTarget) {
+                return;
+              }
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onToggle(set.id);
+              }
+            }}
+          >
+            <div className="flex size-6 items-center justify-center">
+              <Checkbox
+                aria-label={`Select ${set.name}`}
+                checked={isSelected}
+                className={cn(
+                  "opacity-0 transition-opacity group-hover/set-row:opacity-100 group-focus-within/set-row:opacity-100",
+                  keepCheckboxesVisible && "opacity-100",
+                )}
+                onClick={(event) => event.stopPropagation()}
+                onCheckedChange={(checked) => onToggle(set.id, checked === true)}
+              />
+            </div>
+            <div className="flex min-w-0 items-baseline gap-2">
+              <span className="min-w-0 truncate font-medium">{set.name}</span>
+              <span className="shrink-0 text-[0.65rem] text-muted-foreground">
+                {set.skillIds.length} skill{set.skillIds.length === 1 ? "" : "s"}
+              </span>
+            </div>
+            <div className="min-w-0 truncate text-muted-foreground">
+              {memberNames || "No available skills"}
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`Edit ${set.name}`}
+              title={`Edit ${set.name}`}
+              className="justify-self-end"
+              onClick={(event) => {
+                event.stopPropagation();
+                onEdit(set.id);
+              }}
+            >
+              <RiEditLine aria-hidden="true" />
+            </Button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function SkillSelectionList({
+  skills,
+  selectedSkillIds,
+  disabled,
+  onToggle,
+}: {
+  skills: CatalogSkillSummaryDto[];
+  selectedSkillIds: ReadonlySet<string>;
+  disabled: boolean;
+  onToggle: (skillId: string, checked: boolean) => void;
+}) {
+  return (
+    <div role="list" className="flex flex-col p-1">
+      {skills.map((skill) => (
+        <label
+          key={skill.id}
+          className={cn(
+            "flex min-w-0 items-center gap-2 px-2 py-1.5 hover:bg-muted",
+            disabled ? "cursor-default" : "cursor-pointer",
+          )}
+        >
+          <Checkbox
+            aria-label={`${skill.name} set membership`}
+            checked={selectedSkillIds.has(skill.id)}
+            disabled={disabled}
+            onCheckedChange={(checked) => onToggle(skill.id, checked === true)}
+          />
+          <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
+            <span className="min-w-0 flex-1 truncate text-xs font-medium">{skill.name}</span>
+            <span className="max-w-40 shrink-0 truncate text-[0.65rem] text-muted-foreground">
+              {formatSkillSource(skill)}
+            </span>
+          </div>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 export function SkillsPage() {
   const {
     data,
     skills,
+    sets,
     indexDiagnostics,
     indexStatus,
     error,
@@ -160,17 +291,32 @@ export function SkillsPage() {
     clearImportError,
     isExporting,
     exportCatalogSkills,
+    setMutationError,
+    isSavingSet,
+    isDeletingSets,
+    createSkillSet,
+    updateSkillSet,
+    deleteSkillSets,
+    clearSetMutationError,
   } = useCatalogSkills();
   const [query, setQuery] = useState("");
   const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(() => new Set());
+  const [selectedSetIds, setSelectedSetIds] = useState<Set<string>>(() => new Set());
   const [activeTab, setActiveTab] = useState<"item" | "set">("item");
   const [viewingSkillId, setViewingSkillId] = useState<string | null>(null);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [isDeleteSetDialogOpen, setIsDeleteSetDialogOpen] = useState(false);
+  const [isSetEditorOpen, setIsSetEditorOpen] = useState(false);
+  const [editingSetId, setEditingSetId] = useState<string | null>(null);
+  const [setName, setSetName] = useState("");
+  const [setSkillIds, setSetSkillIds] = useState<Set<string>>(() => new Set());
+  const [setSkillQuery, setSetSkillQuery] = useState("");
   const [importPreview, setImportPreview] = useState<ScanImportFolderResponseDto | null>(null);
   const [selectedImportPaths, setSelectedImportPaths] = useState<Set<string>>(() => new Set());
   const [importQuery, setImportQuery] = useState("");
   const normalizedQuery = query.trim().toLowerCase();
   const normalizedImportQuery = importQuery.trim().toLowerCase();
+  const normalizedSetSkillQuery = setSkillQuery.trim().toLowerCase();
 
   useEffect(() => {
     if (deleteError) {
@@ -182,9 +328,30 @@ export function SkillsPage() {
     () => skills.filter((skill) => skillMatchesQuery(skill, normalizedQuery)),
     [normalizedQuery, skills],
   );
+  const skillsById = useMemo(() => new Map(skills.map((skill) => [skill.id, skill])), [skills]);
+  const filteredSets = useMemo(() => {
+    if (!normalizedQuery) {
+      return sets;
+    }
+    return sets.filter((set) =>
+      [
+        set.name,
+        ...set.skillIds.flatMap((skillId) => {
+          const skill = skillsById.get(skillId);
+          return skill ? [skill.name, skill.description] : [];
+        }),
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedQuery),
+    );
+  }, [normalizedQuery, sets, skillsById]);
   const visibleSkillIds = filteredSkills.map((skill) => skill.id);
+  const visibleSetIds = filteredSets.map((set) => set.id);
   const allVisibleItemsSelected =
     visibleSkillIds.length > 0 && visibleSkillIds.every((skillId) => selectedSkillIds.has(skillId));
+  const allVisibleSetsSelected =
+    visibleSetIds.length > 0 && visibleSetIds.every((setId) => selectedSetIds.has(setId));
   const viewingSkill = skills.find((skill) => skill.id === viewingSkillId) ?? null;
   const visibleDetail = detail?.skill.id === viewingSkillId ? detail : null;
   const filteredImportCandidates = useMemo(() => {
@@ -209,6 +376,10 @@ export function SkillsPage() {
   const allImportCandidatesSelected =
     selectableImportPaths.length > 0 &&
     selectableImportPaths.every((path) => selectedImportPaths.has(path));
+  const filteredSetSkills = useMemo(
+    () => skills.filter((skill) => skillMatchesQuery(skill, normalizedSetSkillQuery)),
+    [normalizedSetSkillQuery, skills],
+  );
 
   const toggleSelection = (skillId: string, checked?: boolean) => {
     setSelectedSkillIds((current) => {
@@ -225,6 +396,19 @@ export function SkillsPage() {
     });
   };
 
+  const toggleSetSelection = (setId: string, checked?: boolean) => {
+    setSelectedSetIds((current) => {
+      const next = new Set(current);
+      const shouldSelect = checked ?? !next.has(setId);
+      if (shouldSelect) {
+        next.add(setId);
+      } else {
+        next.delete(setId);
+      }
+      return next;
+    });
+  };
+
   const handleTabChange = (value: string) => {
     if (value === "item" || value === "set") {
       setActiveTab(value);
@@ -232,6 +416,20 @@ export function SkillsPage() {
   };
 
   const toggleSelectAll = () => {
+    if (activeTab === "set") {
+      setSelectedSetIds((current) => {
+        const next = new Set(current);
+        visibleSetIds.forEach((setId) => {
+          if (allVisibleSetsSelected) {
+            next.delete(setId);
+          } else {
+            next.add(setId);
+          }
+        });
+        return next;
+      });
+      return;
+    }
     setSelectedSkillIds((current) => {
       const next = new Set(current);
 
@@ -295,6 +493,78 @@ export function SkillsPage() {
     setIsDeleteDialogOpen(false);
     toast.success(
       `Deleted ${deletedIds.length} skill${deletedIds.length === 1 ? "" : "s"} from the catalog and Agent directories.`,
+    );
+  };
+
+  const openCreateSetDialog = () => {
+    clearSetMutationError();
+    setEditingSetId(null);
+    setSetName("");
+    setSetSkillIds(new Set());
+    setSetSkillQuery("");
+    setIsSetEditorOpen(true);
+  };
+
+  const openEditSetDialog = (setId: string) => {
+    const set = sets.find((candidate) => candidate.id === setId);
+    if (!set) {
+      return;
+    }
+    clearSetMutationError();
+    setEditingSetId(set.id);
+    setSetName(set.name);
+    setSetSkillIds(new Set(set.skillIds));
+    setSetSkillQuery("");
+    setIsSetEditorOpen(true);
+  };
+
+  const toggleSetSkill = (skillId: string, checked: boolean) => {
+    setSetSkillIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(skillId);
+      } else {
+        next.delete(skillId);
+      }
+      return next;
+    });
+  };
+
+  const handleSaveSet = async () => {
+    const name = setName.trim();
+    if (!name) {
+      toast.error("Enter a Skill Set name.");
+      return;
+    }
+    if (setSkillIds.size === 0) {
+      toast.error("Select at least one Skill.");
+      return;
+    }
+    const request = { name, skillIds: Array.from(setSkillIds) };
+    const saved = editingSetId
+      ? await updateSkillSet({ setId: editingSetId, ...request })
+      : await createSkillSet(request);
+    if (!saved) {
+      return;
+    }
+    setIsSetEditorOpen(false);
+    toast.success(`${editingSetId ? "Updated" : "Created"} Skill Set ${saved.name}.`);
+  };
+
+  const handleDeleteSets = async () => {
+    const deletedIds = await deleteSkillSets({ setIds: Array.from(selectedSetIds) });
+    if (!deletedIds) {
+      return;
+    }
+    const deleted = new Set(deletedIds);
+    setSelectedSetIds((current) => {
+      const next = new Set(current);
+      deleted.forEach((setId) => next.delete(setId));
+      return next;
+    });
+    setIsDeleteSetDialogOpen(false);
+    toast.success(
+      `Deleted ${deletedIds.length} Skill Set definition${deletedIds.length === 1 ? "" : "s"}; catalog Skills were not deleted.`,
     );
   };
 
@@ -406,7 +676,12 @@ export function SkillsPage() {
     }
   };
 
-  const isSelectionUnavailable = activeTab === "set" || visibleSkillIds.length === 0;
+  const isSelectionUnavailable =
+    activeTab === "item" ? visibleSkillIds.length === 0 : visibleSetIds.length === 0;
+  const allVisibleSelected =
+    activeTab === "item" ? allVisibleItemsSelected : allVisibleSetsSelected;
+  const hasActiveSelection =
+    activeTab === "item" ? selectedSkillIds.size > 0 : selectedSetIds.size > 0;
 
   return (
     <>
@@ -418,14 +693,12 @@ export function SkillsPage() {
               type="button"
               variant="outline"
               size="sm"
-              aria-pressed={allVisibleItemsSelected}
-              aria-label={activeTab === "set" ? "Select all unavailable for skill sets" : undefined}
-              title={activeTab === "set" ? "Skill set selection is unavailable" : undefined}
+              aria-pressed={allVisibleSelected}
               disabled={isSelectionUnavailable}
               onClick={toggleSelectAll}
             >
               <RiCheckboxMultipleLine aria-hidden="true" data-icon="inline-start" />
-              {allVisibleItemsSelected ? "Deselect all" : "Select all"}
+              {allVisibleSelected ? "Deselect all" : "Select all"}
             </Button>
             <Button
               type="button"
@@ -442,19 +715,26 @@ export function SkillsPage() {
               type="button"
               variant="destructive"
               size="sm"
-              aria-label="Delete selected skills"
+              aria-label={activeTab === "item" ? "Delete selected skills" : "Delete selected sets"}
               disabled={
-                activeTab === "set" ||
-                selectedSkillIds.size === 0 ||
+                !hasActiveSelection ||
                 isDeleting ||
+                isDeletingSets ||
                 isScanningImport ||
                 isImporting ||
                 isExporting
               }
-              onClick={() => setIsDeleteDialogOpen(true)}
+              onClick={() => {
+                if (activeTab === "item") {
+                  setIsDeleteDialogOpen(true);
+                } else {
+                  clearSetMutationError();
+                  setIsDeleteSetDialogOpen(true);
+                }
+              }}
             >
               <RiDeleteBinLine aria-hidden="true" data-icon="inline-start" />
-              {isDeleting ? "Deleting…" : "Delete"}
+              {isDeleting || isDeletingSets ? "Deleting…" : "Delete"}
             </Button>
           </>
           {activeTab === "item" ? (
@@ -505,9 +785,9 @@ export function SkillsPage() {
               type="button"
               variant="outline"
               size="sm"
-              aria-label="Add unavailable"
-              title="Adding skill sets is unavailable"
-              disabled
+              aria-label="Add Skill Set"
+              disabled={isSavingSet || isDeletingSets || skills.length === 0}
+              onClick={openCreateSetDialog}
             >
               <RiAddLine aria-hidden="true" data-icon="inline-start" />
               Add
@@ -560,9 +840,7 @@ export function SkillsPage() {
             </div>
             <TabsList className="shrink-0">
               <TabsTrigger value="item">Item</TabsTrigger>
-              <TabsTrigger value="set" title="Skill sets are unavailable">
-                Set
-              </TabsTrigger>
+              <TabsTrigger value="set">Set</TabsTrigger>
             </TabsList>
           </div>
 
@@ -659,12 +937,38 @@ export function SkillsPage() {
           </TabsContent>
 
           <TabsContent value="set" className="flex min-h-0 min-w-0 flex-1 flex-col">
-            <div className="px-4 py-10 text-center" aria-live="polite">
-              <p className="text-sm font-medium">Skill sets unavailable</p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Skill set actions are not available yet.
-              </p>
-            </div>
+            {isLoading && !data ? (
+              <div className="px-4 py-10 text-center" role="status" aria-live="polite">
+                <p className="text-sm font-medium">Loading Skill Sets…</p>
+              </div>
+            ) : error && !data ? (
+              <div className="px-4 py-10 text-center" role="alert">
+                <p className="text-sm font-medium">Unable to load Skill Sets</p>
+                <IpcErrorDetails error={error} className="mt-1" />
+              </div>
+            ) : sets.length === 0 ? (
+              <div className="px-4 py-10 text-center" aria-live="polite">
+                <p className="text-sm font-medium">No Skill Sets</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Add a Set to group Skills for quick selection.
+                </p>
+              </div>
+            ) : filteredSets.length > 0 ? (
+              <ScrollArea className="min-h-0 min-w-0 flex-1">
+                <SkillSetList
+                  sets={filteredSets}
+                  skillsById={skillsById}
+                  selectedSetIds={selectedSetIds}
+                  onToggle={toggleSetSelection}
+                  onEdit={openEditSetDialog}
+                />
+              </ScrollArea>
+            ) : (
+              <div className="px-4 py-10 text-center" aria-live="polite">
+                <p className="text-sm font-medium">No matching results</p>
+                <p className="mt-1 text-sm text-muted-foreground">Try a different search term.</p>
+              </div>
+            )}
           </TabsContent>
         </Tabs>
       </div>
@@ -831,6 +1135,134 @@ export function SkillsPage() {
               </DialogFooter>
             </>
           ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={isSetEditorOpen}
+        onOpenChange={(open) => {
+          if (!isSavingSet) {
+            setIsSetEditorOpen(open);
+            if (!open) {
+              clearSetMutationError();
+            }
+          }
+        }}
+      >
+        <DialogContent className="flex h-[min(80vh,720px)] max-w-2xl flex-col overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>{editingSetId ? "Edit Skill Set" : "Add Skill Set"}</DialogTitle>
+          </DialogHeader>
+          <form
+            className="flex min-h-0 flex-1 flex-col gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleSaveSet();
+            }}
+          >
+            <label className="flex flex-col gap-1.5" htmlFor="skill-set-name">
+              <span className="font-medium">Set name</span>
+              <Input
+                id="skill-set-name"
+                value={setName}
+                onChange={(event) => setSetName(event.currentTarget.value)}
+                placeholder="Set name"
+                maxLength={120}
+                disabled={isSavingSet}
+                required
+              />
+            </label>
+
+            <fieldset className="flex min-h-0 flex-1 flex-col gap-2">
+              <legend className="font-medium">Skills</legend>
+              <div className="relative min-w-0">
+                <RiSearchLine
+                  aria-hidden="true"
+                  className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground"
+                />
+                <Input
+                  aria-label="Search Skills for Set"
+                  value={setSkillQuery}
+                  onChange={(event) => setSetSkillQuery(event.currentTarget.value)}
+                  placeholder="Search Skills"
+                  className="pl-8"
+                  disabled={isSavingSet}
+                />
+              </div>
+              <ScrollArea className="min-h-0 flex-1 border border-input">
+                {filteredSetSkills.length > 0 ? (
+                  <SkillSelectionList
+                    skills={filteredSetSkills}
+                    selectedSkillIds={setSkillIds}
+                    disabled={isSavingSet}
+                    onToggle={toggleSetSkill}
+                  />
+                ) : (
+                  <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+                    No matching Skills.
+                  </div>
+                )}
+              </ScrollArea>
+            </fieldset>
+
+            {setMutationError ? (
+              <div role="alert" className="shrink-0 border border-destructive/40 px-3 py-2">
+                <p className="font-medium">Unable to save Skill Set</p>
+                <IpcErrorDetails error={setMutationError} compact />
+              </div>
+            ) : null}
+
+            <DialogFooter className="shrink-0">
+              <DialogClose asChild>
+                <Button type="button" variant="outline" disabled={isSavingSet}>
+                  Cancel
+                </Button>
+              </DialogClose>
+              <Button
+                type="submit"
+                aria-busy={isSavingSet}
+                disabled={isSavingSet || !setName.trim() || setSkillIds.size === 0}
+              >
+                {isSavingSet ? "Saving…" : editingSetId ? "Save changes" : "Add Set"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={isDeleteSetDialogOpen}
+        onOpenChange={(open) => {
+          if (!isDeletingSets) {
+            setIsDeleteSetDialogOpen(open);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete selected Skill Sets?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            This deletes {selectedSetIds.size} Set definition
+            {selectedSetIds.size === 1 ? "" : "s"}. The Skills in each Set remain in the central
+            catalog and Agent directories.
+          </p>
+          {setMutationError ? <IpcErrorDetails error={setMutationError} /> : null}
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="outline" disabled={isDeletingSets}>
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={isDeletingSets}
+              onClick={() => void handleDeleteSets()}
+            >
+              {isDeletingSets ? "Deleting…" : "Delete definitions"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

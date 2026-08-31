@@ -6,11 +6,15 @@ import { workspacesService } from "@/app/services/workspaces-service";
 import type { IpcError } from "@/shared/types/ipc";
 import type {
   CatalogSkillDetailDto,
+  CreateSkillSetRequestDto,
+  DeleteSkillSetsRequestDto,
   ExportCatalogSkillsRequestDto,
   ExportCatalogSkillsResponseDto,
   ImportLocalSkillsRequestDto,
   ImportLocalSkillsResponseDto,
   ScanImportFolderResponseDto,
+  SkillSetDto,
+  UpdateSkillSetRequestDto,
 } from "@/shared/types/skills";
 import type { WorkspaceReconcileOutcomeDto } from "@/shared/types/workspaces";
 import { unexpectedClientError, useServiceResource } from "./use-service-resource";
@@ -30,6 +34,9 @@ export function useCatalogSkills() {
   const [isScanningImport, setIsScanningImport] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [setMutationError, setSetMutationError] = useState<IpcError | null>(null);
+  const [isSavingSet, setIsSavingSet] = useState(false);
+  const [isDeletingSets, setIsDeletingSets] = useState(false);
   const detailRequestId = useRef(0);
 
   const refresh = useCallback(async (): Promise<WorkspaceReconcileOutcomeDto | null> => {
@@ -147,12 +154,69 @@ export function useCatalogSkills() {
     [],
   );
 
+  const createSkillSet = useCallback(
+    async (request: CreateSkillSetRequestDto): Promise<SkillSetDto | null> => {
+      setSetMutationError(null);
+      setIsSavingSet(true);
+      try {
+        const set = await skillsService.createSkillSet(request);
+        await resource.refresh();
+        return set;
+      } catch (caught: unknown) {
+        setSetMutationError(isIpcError(caught) ? caught : unexpectedClientError(caught));
+        return null;
+      } finally {
+        setIsSavingSet(false);
+      }
+    },
+    [resource.refresh],
+  );
+
+  const updateSkillSet = useCallback(
+    async (request: UpdateSkillSetRequestDto): Promise<SkillSetDto | null> => {
+      setSetMutationError(null);
+      setIsSavingSet(true);
+      try {
+        const set = await skillsService.updateSkillSet(request);
+        await resource.refresh();
+        return set;
+      } catch (caught: unknown) {
+        setSetMutationError(isIpcError(caught) ? caught : unexpectedClientError(caught));
+        return null;
+      } finally {
+        setIsSavingSet(false);
+      }
+    },
+    [resource.refresh],
+  );
+
+  const deleteSkillSets = useCallback(
+    async (request: DeleteSkillSetsRequestDto): Promise<string[] | null> => {
+      setSetMutationError(null);
+      setIsDeletingSets(true);
+      try {
+        const response = await skillsService.deleteSkillSets(request);
+        await resource.refresh();
+        return response.deletedSetIds;
+      } catch (caught: unknown) {
+        setSetMutationError(isIpcError(caught) ? caught : unexpectedClientError(caught));
+        return null;
+      } finally {
+        setIsDeletingSets(false);
+      }
+    },
+    [resource.refresh],
+  );
+
+  const clearSetMutationError = useCallback(() => setSetMutationError(null), []);
+
   return {
     ...resource,
     error: deleteError ?? refreshError ?? resource.error,
     isRefreshing: isReconcilingAgents || resource.isRefreshing,
     refresh,
     skills: resource.data?.skills ?? [],
+    sets: resource.data?.sets ?? [],
     indexDiagnostics: resource.data?.diagnostics ?? [],
     indexStatus: resource.data?.index ?? null,
     detail,
@@ -171,5 +235,12 @@ export function useCatalogSkills() {
     clearImportError,
     isExporting,
     exportCatalogSkills,
+    setMutationError,
+    isSavingSet,
+    isDeletingSets,
+    createSkillSet,
+    updateSkillSet,
+    deleteSkillSets,
+    clearSetMutationError,
   };
 }

@@ -5,11 +5,12 @@ use tauri::State;
 use crate::{
     commands::{parse_request, run_application},
     ipc::{
-        CatalogSkillDetailDto, CatalogSkillsResponseDto, DeleteCatalogSkillsRequestDto,
-        DeleteCatalogSkillsResponseDto, ExportCatalogSkillsRequestDto,
-        ExportCatalogSkillsResponseDto, ImportLocalSkillsRequestDto, ImportLocalSkillsResponseDto,
-        IpcError, RebuildCatalogIndexResponseDto, ScanImportFolderRequestDto,
-        ScanImportFolderResponseDto, SkillIdRequestDto,
+        CatalogSkillDetailDto, CatalogSkillsResponseDto, CreateSkillSetRequestDto,
+        DeleteCatalogSkillsRequestDto, DeleteCatalogSkillsResponseDto, DeleteSkillSetsRequestDto,
+        DeleteSkillSetsResponseDto, ExportCatalogSkillsRequestDto, ExportCatalogSkillsResponseDto,
+        ImportLocalSkillsRequestDto, ImportLocalSkillsResponseDto, IpcError,
+        RebuildCatalogIndexResponseDto, ScanImportFolderRequestDto, ScanImportFolderResponseDto,
+        SkillIdRequestDto, SkillSetDto, UpdateSkillSetRequestDto,
     },
     state::AppState,
 };
@@ -23,6 +24,51 @@ pub async fn list_catalog_skills(
     })
     .await?;
     Ok(skills.into())
+}
+
+#[tauri::command]
+pub async fn create_skill_set(
+    request: Option<serde_json::Value>,
+    state: State<'_, AppState>,
+) -> Result<SkillSetDto, IpcError> {
+    let request: CreateSkillSetRequestDto = parse_request(request)?;
+    let set = run_application(state.application.clone(), move |application| {
+        application.create_skill_set(request.name, request.skill_ids)
+    })
+    .await?;
+    Ok(set.into())
+}
+
+#[tauri::command]
+pub async fn update_skill_set(
+    request: Option<serde_json::Value>,
+    state: State<'_, AppState>,
+) -> Result<SkillSetDto, IpcError> {
+    let request: UpdateSkillSetRequestDto = parse_request(request)?;
+    let set_id = request.set_id;
+    let set = run_application(state.application.clone(), move |application| {
+        application.update_skill_set(&set_id, request.name, request.skill_ids)
+    })
+    .await?;
+    Ok(set.into())
+}
+
+#[tauri::command]
+pub async fn delete_skill_sets(
+    request: Option<serde_json::Value>,
+    state: State<'_, AppState>,
+) -> Result<DeleteSkillSetsResponseDto, IpcError> {
+    let request: DeleteSkillSetsRequestDto = parse_request(request)?;
+    let deleted = run_application(state.application.clone(), move |application| {
+        application.delete_skill_sets(request.set_ids)
+    })
+    .await?;
+    Ok(DeleteSkillSetsResponseDto {
+        deleted_set_ids: deleted
+            .into_iter()
+            .map(|set_id| set_id.to_string())
+            .collect(),
+    })
 }
 
 #[tauri::command]

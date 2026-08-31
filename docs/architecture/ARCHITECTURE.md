@@ -473,7 +473,13 @@ SkillId 继续由现有领域规则从原始目录名确定性派生。列表从
 - application settings 与中央 catalog root；
 - Agents/Project/Linked Workspace 定义；
 - `(SkillId, HarnessId, WorkspaceId)` deployment bindings；
+- Skill Set 定义及有序的 SkillId membership；
 - Dashboard 使用的 catalog import/update 活动。
+
+Skill Set 只是组合中央 Skill 的应用定义，不拥有或复制 Skill 内容。删除 Set 通过外键级联只
+删除 membership；不删除 `.yss-skills/skills`、Agent Skill 或 deployment binding。Catalog
+Skill 删除会移除对应 membership，外部 filesystem 变化产生的 stale member 在公开 projection
+中被过滤。
 
 用户可编辑的 Agent 配置不写入 SQLite，而是保存在 Tauri app data 下独立的
 `agents.json`；文件只包含稳定 Agent ID、可选检测器 ID、显示名称和 Agent 根路径，不包含
@@ -483,7 +489,8 @@ schema/version 字段。内置 Harness 配置只在没有对应用户覆盖时�
 `skill-index.sqlite3`。首次启动且尚未持久化该设置时，
 中央 catalog root 默认为用户主目录下的 `.yss-skills`（Windows 即
 `C:\Users\<user>\.yss-skills`）；此后以状态数据库中持久化的设置为准。状态库 schema
-不持久化版本字段，也不提供旧 schema 兼容迁移；数据库为空时只初始化当前表结构。索引库
+不持久化版本字段；数据库为空时初始化当前表结构，既有状态库启动时以 additive、幂等方式
+补建 `skill_sets`、`skill_set_members` 及名称唯一索引。索引库
 使用独立的 application ID、schema version 和 integrity check，因为它可以安全整体重建。
 状态库连接启用 foreign keys、WAL 和 5 秒 busy timeout，索引库同样使用 WAL 和 busy timeout。
 路径以无损平台 BLOB 保存：
@@ -707,7 +714,8 @@ Project list Dialog 内的 Add 创建。Agent 列表的 Edit 操作复用原有 
 的名称和路径；
 下方 Skills 区域使用中央 Skills 列表数据，
 通过与 Skills 页面一致的 Item/Set Tabs 展示，Item 中的当前关联状态来自 Agent Skills 目录
-中实际指向中央库的 Link，Set 与 Skills 页面一样保持未开放状态。Add agent / Save changes
+中实际指向中央库的 Link。Set Tab 展示持久化 Set；选择一个 Set 会把其全部有效 member 合并到
+当前普通 Skill 多选并立即返回 Item Tab，最终 Agent 请求仍只提交普通 SkillId。Add agent / Save changes
 会持久化独立 Agent 配置，并把选择的中央 Skills 通过当前平台 Link 写入
 `<agentPath>/skills`。名称和路径都可编辑；路径变化时先写入新路径并保存配置，再只清理旧路径
 中确实指向当前 `.yss-skills/skills` 的 Link。普通目录和外部 Link 保持不动；目标同名普通
@@ -724,6 +732,8 @@ Select all，Delete 清空所选 Project Agent 的 Skills 并清理对应 bindin
 Workspace 以及其他项目文件。
 Skills 页首次加载只读取 catalog；
 列表中的来源副标题来自 `.agents/.skill-lock.json` 的匹配 `source`，没有匹配 metadata 时留空；
+Set Tab 支持创建、编辑、多选和删除定义。创建/编辑 Dialog 使用与 Agent Skill picker 一致的
+紧凑 checkbox Skill 列表；Set 删除确认明确说明只删除定义，不删除后台 Skills；
 用户点击 Refresh 时，hook 通过 Workspace service 取得 Agents Workspace ID、显式调用
 reconcile；reconcile 在扫描前只删除各 Agent skills 根一级目录中目标已不存在的
 Junction/SymbolicLink，再重新读取 catalog，因此会把发现的 Agent Skill 导入中央库，并
@@ -735,8 +745,8 @@ reconcile。Skills Delete 由确认对话框显式触发：先删除所有已检
 扫描该根目录，只接受仍在扫描结果中的已选路径，再复制到中央库，已存在的目录名或内容匹配
 项作为 skipped 返回。Skills Export 打开系统目标目录选择器，由后端在目标内创建本地时间命名
 的 `yss-export-YYYYMMDDHHmm` 文件夹，并以拒绝覆盖策略将已选中央 Skills 按原目录名复制进去；
-目标与中央 catalog 重叠或同一分钟的导出目录已存在时明确失败。Registry install、Skill Set
-CRUD、其他 Workspace 编辑和语言切换当前不可用，不得用本地 timer 或临时状态伪造成功。
+目标与中央 catalog 重叠或同一分钟的导出目录已存在时明确失败。Registry install、其他
+Workspace 编辑和语言切换当前不可用，不得用本地 timer 或临时状态伪造成功。
 
 ## 8. 错误、诊断与日志
 

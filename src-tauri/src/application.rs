@@ -7,7 +7,7 @@ use std::{
 };
 
 use chrono::Local;
-use skill_core::{SkillId, SkillIdError};
+use skill_core::{SkillId, SkillIdError, SkillSetId, SkillSetIdError};
 use skill_harness::{
     DetectionStatus, HarnessAdapter, HarnessCapabilities, HarnessCategory, HarnessEnvironment,
     HarnessError, HarnessId, HarnessRegistry,
@@ -28,10 +28,11 @@ use thiserror::Error;
 use crate::agent_config::{AgentConfigError, AgentConfigStore, StoredAgentConfig};
 use crate::persistence::{
     CatalogActivityKind, CatalogIndexWorkerConfig, PersistenceError, PersistentCatalog,
-    StoredWorkspace,
+    StoredSkillSet, StoredWorkspace,
 };
 
 const MAX_WORKSPACE_NAME_CHARS: usize = 120;
+const MAX_SKILL_SET_NAME_CHARS: usize = 120;
 const DASHBOARD_WEEK_COUNT: i64 = 12;
 const SECONDS_PER_DAY: i64 = 86_400;
 const SECONDS_PER_WEEK: i64 = 7 * SECONDS_PER_DAY;
@@ -71,6 +72,8 @@ pub enum ApplicationError {
     InvalidSkillId(#[source] SkillIdError),
     #[error("workspace id is invalid")]
     InvalidWorkspaceId(#[source] WorkspaceIdError),
+    #[error("skill set id is invalid")]
+    InvalidSkillSetId(#[source] SkillSetIdError),
     #[error("workspace content changed while reconciliation was being prepared")]
     WorkspaceChangedDuringReconcile,
 }
@@ -113,6 +116,7 @@ pub struct CatalogSkillSummary {
 #[derive(Debug, Clone)]
 pub struct CatalogSkillList {
     pub skills: Vec<CatalogSkillSummary>,
+    pub sets: Vec<SkillSetSummary>,
     pub diagnostics: Vec<CatalogSkillIndexDiagnostic>,
     pub freshness: CatalogIndexFreshness,
     pub revision: i64,
@@ -811,6 +815,25 @@ impl Application {
                     source_metadata,
                 }
             })
+            .collect::<Vec<_>>();
+        let available_skill_ids = skills
+            .iter()
+            .map(|skill| skill.snapshot.installed.id)
+            .collect::<HashSet<_>>();
+        let sets = self
+            .catalog
+            .list_skill_sets()?
+            .into_iter()
+            .map(|mut stored| {
+                stored
+                    .skill_ids
+                    .retain(|skill_id| available_skill_ids.contains(skill_id));
+                SkillSetSummary {
+                    id: stored.id,
+                    name: stored.name,
+                    skill_ids: stored.skill_ids,
+                }
+            })
             .collect();
         let diagnostics = view
             .diagnostics
@@ -829,11 +852,102 @@ impl Application {
         };
         Ok(CatalogSkillList {
             skills,
+            sets,
             diagnostics,
             freshness,
             revision: view.revision,
             last_reconciled_at_epoch_millis: view.last_reconciled_at_epoch_millis,
         })
+    }
+
+    pub fn create_skill_set(
+        &mut self,
+        name: String,
+        raw_skill_ids: Vec<String>,
+    ) -> Result<SkillSetSummary, ApplicationError> {
+        let name = normalize_skill_set_name(&name)?;
+        let skill_ids = self.validate_skill_set_members(raw_skill_ids)?;
+        let stored = StoredSkillSet {
+            id: SkillSetId::new(),
+            name,
+            skill_ids,
+        };
+        self.catalog.insert_skill_set(&stored)?;
+        Ok(skill_set_summary(stored))
+    }
+
+    pub fn update_skill_set(
+        &mut self,
+        raw_set_id: &str,
+        name: String,
+        raw_skill_ids: Vec<String>,
+    ) -> Result<SkillSetSummary, ApplicationError> {
+        let set_id = SkillSetId::parse(raw_set_id).map_err(ApplicationError::InvalidSkillSetId)?;
+        let name = normalize_skill_set_name(&name)?;
+        let skill_ids = self.validate_skill_set_members(raw_skill_ids)?;
+        let stored = StoredSkillSet {
+            id: set_id,
+            name,
+            skill_ids,
+        };
+        self.catalog.update_skill_set(&stored)?;
+        Ok(skill_set_summary(stored))
+    }
+
+    pub fn delete_skill_sets(
+        &mut self,
+        raw_set_ids: Vec<String>,
+    ) -> Result<Vec<SkillSetId>, ApplicationError> {
+        if raw_set_ids.is_empty() {
+            return Err(ApplicationError::InvalidRequest {
+                field: "setIds",
+                reason: "must not be empty",
+            });
+        }
+        let mut set_ids = Vec::with_capacity(raw_set_ids.len());
+        for raw_set_id in raw_set_ids {
+            let set_id =
+                SkillSetId::parse(&raw_set_id).map_err(ApplicationError::InvalidSkillSetId)?;
+            if !set_ids.contains(&set_id) {
+                set_ids.push(set_id);
+            }
+        }
+        self.catalog.delete_skill_sets(&set_ids)?;
+        Ok(set_ids)
+    }
+
+    fn validate_skill_set_members(
+        &self,
+        raw_skill_ids: Vec<String>,
+    ) -> Result<Vec<SkillId>, ApplicationError> {
+        if raw_skill_ids.is_empty() {
+            return Err(ApplicationError::InvalidRequest {
+                field: "skillIds",
+                reason: "must not be empty",
+            });
+        }
+        let available = self
+            .catalog
+            .list_catalog_skills()?
+            .into_iter()
+            .map(|snapshot| snapshot.installed.id)
+            .collect::<HashSet<_>>();
+        let mut skill_ids = Vec::with_capacity(raw_skill_ids.len());
+        for raw_skill_id in raw_skill_ids {
+            let skill_id =
+                SkillId::parse(&raw_skill_id).map_err(ApplicationError::InvalidSkillId)?;
+            if !available.contains(&skill_id) {
+                return Err(PersistenceError::NotFound {
+                    entity: "catalog_skill",
+                    id: raw_skill_id,
+                }
+                .into());
+            }
+            if !skill_ids.contains(&skill_id) {
+                skill_ids.push(skill_id);
+            }
+        }
+        Ok(skill_ids)
     }
 
     pub fn rebuild_catalog_index(
@@ -1541,6 +1655,7 @@ impl Application {
             self.local.delete(&deleted_path)?;
             self.catalog
                 .remove_catalog_skill_from_index(*skill_id, &deleted_path)?;
+            self.catalog.remove_skill_from_sets(*skill_id)?;
         }
 
         Ok(skill_ids)
@@ -2095,6 +2210,21 @@ fn source_metadata_for_snapshot(
         .cloned()
 }
 
+fn skill_set_summary(stored: StoredSkillSet) -> SkillSetSummary {
+    SkillSetSummary {
+        id: stored.id,
+        name: stored.name,
+        skill_ids: stored.skill_ids,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillSetSummary {
+    pub id: SkillSetId,
+    pub name: String,
+    pub skill_ids: Vec<SkillId>,
+}
+
 fn merge_reconcile_reports(current: &mut ReconcileReport, mut next: ReconcileReport) {
     current.imported.append(&mut next.imported);
     sort_dedup_skill_ids(&mut current.imported);
@@ -2178,6 +2308,23 @@ fn normalize_workspace_name(value: &str) -> Result<String, ApplicationError> {
         });
     }
     Ok(value.to_owned())
+}
+
+fn normalize_skill_set_name(value: &str) -> Result<String, ApplicationError> {
+    let name = value.trim();
+    if name.is_empty() {
+        return Err(ApplicationError::InvalidRequest {
+            field: "name",
+            reason: "must not be empty",
+        });
+    }
+    if name.chars().count() > MAX_SKILL_SET_NAME_CHARS {
+        return Err(ApplicationError::InvalidRequest {
+            field: "name",
+            reason: "must contain at most 120 characters",
+        });
+    }
+    Ok(name.to_owned())
 }
 
 fn validate_input_directory(path: &Path, field: &'static str) -> Result<(), ApplicationError> {
@@ -2362,6 +2509,66 @@ mod tests {
             metadata.source_url.as_deref(),
             Some("https://github.com/obra/superpowers.git")
         );
+    }
+
+    #[test]
+    fn skill_set_crud_survives_reopen_and_never_deletes_catalog_skills() {
+        let root = tempdir().unwrap();
+        let mut application = test_application(root.path());
+        let skills_root = application.catalog.catalog_root().join("skills");
+        let alpha_path = skills_root.join("alpha");
+        let beta_path = skills_root.join("beta");
+        write_test_skill(&alpha_path, "Alpha");
+        write_test_skill(&beta_path, "Beta");
+        application.rebuild_catalog_index().unwrap();
+        let skills = application.list_catalog_skills_view().unwrap().skills;
+        let alpha_id = skills
+            .iter()
+            .find(|skill| skill.snapshot.installed.metadata.name() == "Alpha")
+            .unwrap()
+            .snapshot
+            .installed
+            .id;
+        let beta_id = skills
+            .iter()
+            .find(|skill| skill.snapshot.installed.metadata.name() == "Beta")
+            .unwrap()
+            .snapshot
+            .installed
+            .id;
+
+        let created = application
+            .create_skill_set(
+                "  Daily tools  ".to_owned(),
+                vec![alpha_id.to_string(), beta_id.to_string()],
+            )
+            .unwrap();
+        assert_eq!(created.name, "Daily tools");
+        drop(application);
+
+        let mut reopened = test_application(root.path());
+        let persisted = reopened.list_catalog_skills_view().unwrap().sets;
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].id, created.id);
+        assert_eq!(persisted[0].skill_ids, vec![alpha_id, beta_id]);
+
+        let updated = reopened
+            .update_skill_set(
+                &created.id.to_string(),
+                "Focused tools".to_owned(),
+                vec![beta_id.to_string()],
+            )
+            .unwrap();
+        assert_eq!(updated.name, "Focused tools");
+        assert_eq!(updated.skill_ids, vec![beta_id]);
+
+        reopened
+            .delete_skill_sets(vec![created.id.to_string()])
+            .unwrap();
+        assert!(reopened.list_catalog_skills_view().unwrap().sets.is_empty());
+        assert!(alpha_path.join("SKILL.md").is_file());
+        assert!(beta_path.join("SKILL.md").is_file());
+        assert_eq!(reopened.list_catalog_skills_view().unwrap().skills.len(), 2);
     }
 
     fn associate_test_skill(

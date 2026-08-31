@@ -95,6 +95,53 @@ impl FromStr for SkillId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SkillSetId(Uuid);
+
+impl SkillSetId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    pub fn parse(value: &str) -> Result<Self, SkillSetIdError> {
+        if value.trim().is_empty() {
+            return Err(SkillSetIdError::Empty);
+        }
+
+        Uuid::parse_str(value.trim())
+            .map(Self)
+            .map_err(|_| SkillSetIdError::InvalidFormat)
+    }
+}
+
+impl Default for SkillSetId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for SkillSetId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl FromStr for SkillSetId {
+    type Err = SkillSetIdError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum SkillSetIdError {
+    #[error("skill set id must not be empty")]
+    Empty,
+    #[error("skill set id must be a valid UUID")]
+    InvalidFormat,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum SkillIdError {
     #[error("skill id must not be empty")]

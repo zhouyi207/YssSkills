@@ -45,6 +45,16 @@ export const skillSourceMetadataDtoSchema = z
 
 export type SkillSourceMetadataDto = z.infer<typeof skillSourceMetadataDtoSchema>;
 
+export const skillSetDtoSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    skillIds: z.array(z.string()),
+  })
+  .strict();
+
+export type SkillSetDto = z.infer<typeof skillSetDtoSchema>;
+
 export const catalogSkillSummaryDtoSchema = z
   .object({
     id: z.string(),
@@ -81,6 +91,7 @@ export const catalogIndexStatusDtoSchema = z
 export const catalogSkillsResponseDtoSchema = z
   .object({
     skills: z.array(catalogSkillSummaryDtoSchema),
+    sets: z.array(skillSetDtoSchema),
     diagnostics: z.array(catalogSkillIndexDiagnosticDtoSchema),
     index: catalogIndexStatusDtoSchema,
   })
@@ -194,6 +205,37 @@ export const deleteCatalogSkillsResponseDtoSchema = z
   .strict();
 
 export type DeleteCatalogSkillsResponseDto = z.infer<typeof deleteCatalogSkillsResponseDtoSchema>;
+
+export const createSkillSetRequestDtoSchema = z
+  .object({
+    name: z.string(),
+    skillIds: z.array(z.string()),
+  })
+  .strict();
+
+export type CreateSkillSetRequestDto = z.infer<typeof createSkillSetRequestDtoSchema>;
+
+export const updateSkillSetRequestDtoSchema = createSkillSetRequestDtoSchema.extend({
+  setId: z.string(),
+});
+
+export type UpdateSkillSetRequestDto = z.infer<typeof updateSkillSetRequestDtoSchema>;
+
+export const deleteSkillSetsRequestDtoSchema = z
+  .object({
+    setIds: z.array(z.string()),
+  })
+  .strict();
+
+export type DeleteSkillSetsRequestDto = z.infer<typeof deleteSkillSetsRequestDtoSchema>;
+
+export const deleteSkillSetsResponseDtoSchema = z
+  .object({
+    deletedSetIds: z.array(z.string()),
+  })
+  .strict();
+
+export type DeleteSkillSetsResponseDto = z.infer<typeof deleteSkillSetsResponseDtoSchema>;
 
 export const rebuildCatalogIndexResponseDtoSchema = z
   .object({

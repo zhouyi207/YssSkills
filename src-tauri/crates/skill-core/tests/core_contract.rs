@@ -2,8 +2,21 @@ use std::path::PathBuf;
 
 use skill_core::{
     classify_skill_marker, parse_skill_document, sanitize_skill_name, ContentHash, InstalledSkill,
-    MetadataField, SkillId, SkillMarker, SkillParseError, SkillSource, SkillValidationError,
+    MetadataField, SkillId, SkillMarker, SkillParseError, SkillSetId, SkillSetIdError, SkillSource,
+    SkillValidationError,
 };
+
+#[test]
+fn skill_set_id_is_distinct_and_parseable() {
+    let set_id = SkillSetId::new();
+
+    assert_eq!(SkillSetId::parse(&set_id.to_string()).unwrap(), set_id);
+    assert_eq!(SkillSetId::parse(""), Err(SkillSetIdError::Empty));
+    assert_eq!(
+        SkillSetId::parse("not-a-uuid"),
+        Err(SkillSetIdError::InvalidFormat)
+    );
+}
 
 #[test]
 fn parses_valid_frontmatter_and_preserves_body() {

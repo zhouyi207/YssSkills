@@ -21,8 +21,8 @@ use crate::{
         DeleteProjectAgentsOutcome, DetectedAgent, ExportSkillsOutcome, HarnessOverview,
         HarnessProbe, ImportCandidate, ImportFolderDiagnostic, ImportFolderPreview,
         ImportSkillsOutcome, ProjectAgentOverview, PropagationOutcome, SaveAgentInput,
-        SaveAgentOutcome, WorkspaceObservation, WorkspaceReconcileOutcome, WorkspaceSummary,
-        WorkspacesOverview,
+        SaveAgentOutcome, SkillSetSummary, WorkspaceObservation, WorkspaceReconcileOutcome,
+        WorkspaceSummary, WorkspacesOverview,
     },
     ipc::IpcError,
     persistence::StoredWorkspace,
@@ -110,8 +110,31 @@ impl From<DashboardOverview> for DashboardOverviewDto {
 #[serde(rename_all = "camelCase")]
 pub struct CatalogSkillsResponseDto {
     pub skills: Vec<CatalogSkillSummaryDto>,
+    pub sets: Vec<SkillSetDto>,
     pub diagnostics: Vec<CatalogSkillIndexDiagnosticDto>,
     pub index: CatalogIndexStatusDto,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSetDto {
+    pub id: String,
+    pub name: String,
+    pub skill_ids: Vec<String>,
+}
+
+impl From<SkillSetSummary> for SkillSetDto {
+    fn from(value: SkillSetSummary) -> Self {
+        Self {
+            id: value.id.to_string(),
+            name: value.name,
+            skill_ids: value
+                .skill_ids
+                .into_iter()
+                .map(|skill_id| skill_id.to_string())
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -292,6 +315,7 @@ impl From<CatalogSkillList> for CatalogSkillsResponseDto {
     fn from(value: CatalogSkillList) -> Self {
         Self {
             skills: value.skills.into_iter().map(Into::into).collect(),
+            sets: value.sets.into_iter().map(Into::into).collect(),
             diagnostics: value
                 .diagnostics
                 .into_iter()
@@ -970,6 +994,33 @@ pub struct DeleteCatalogSkillsRequestDto {
 #[serde(rename_all = "camelCase")]
 pub struct DeleteCatalogSkillsResponseDto {
     pub deleted_skill_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateSkillSetRequestDto {
+    pub name: String,
+    pub skill_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateSkillSetRequestDto {
+    pub set_id: String,
+    pub name: String,
+    pub skill_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeleteSkillSetsRequestDto {
+    pub set_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteSkillSetsResponseDto {
+    pub deleted_set_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]

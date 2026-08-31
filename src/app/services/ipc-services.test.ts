@@ -68,6 +68,12 @@ const catalogIndex = {
   lastReconciledAtEpochMillis: null,
 };
 
+const skillSet = {
+  id: "set-1",
+  name: "Example Set",
+  skillIds: [catalogSkill.id],
+};
+
 const rebuildCatalogIndexOutcome = {
   inserted: 1,
   updated: 0,
@@ -154,9 +160,17 @@ describe("IPC services", () => {
   it("uses the backend command names and request envelope", async () => {
     invokeMock
       .mockResolvedValueOnce(dashboardResponse)
-      .mockResolvedValueOnce({ skills: [catalogSkill], diagnostics: [], index: catalogIndex })
+      .mockResolvedValueOnce({
+        skills: [catalogSkill],
+        sets: [skillSet],
+        diagnostics: [],
+        index: catalogIndex,
+      })
       .mockResolvedValueOnce(rebuildCatalogIndexOutcome)
       .mockResolvedValueOnce({ skill: catalogSkill, body: "# Example" })
+      .mockResolvedValueOnce(skillSet)
+      .mockResolvedValueOnce(skillSet)
+      .mockResolvedValueOnce({ deletedSetIds: [skillSet.id] })
       .mockResolvedValueOnce({
         agentsWorkspaceId: workspace.id,
         harnesses: [],
@@ -172,6 +186,9 @@ describe("IPC services", () => {
     openUrlMock.mockResolvedValueOnce(undefined);
 
     const skillRequest = { skillId: catalogSkill.id };
+    const createSetRequest = { name: skillSet.name, skillIds: skillSet.skillIds };
+    const updateSetRequest = { setId: skillSet.id, ...createSetRequest };
+    const deleteSetsRequest = { setIds: [skillSet.id] };
     const createRequest = {
       name: "Project",
       kind: { kind: "project" as const, root: "/project" },
@@ -186,6 +203,9 @@ describe("IPC services", () => {
     await skillsService.listCatalogSkills();
     await skillsService.rebuildCatalogIndex();
     await skillsService.getCatalogSkill(skillRequest);
+    await skillsService.createSkillSet(createSetRequest);
+    await skillsService.updateSkillSet(updateSetRequest);
+    await skillsService.deleteSkillSets(deleteSetsRequest);
     await workspacesService.getWorkspacesOverview();
     await workspacesService.createWorkspace(createRequest);
     await workspacesService.observeWorkspace(workspaceRequest);
@@ -201,6 +221,9 @@ describe("IPC services", () => {
       ["list_catalog_skills"],
       ["rebuild_catalog_index"],
       ["get_catalog_skill", { request: skillRequest }],
+      ["create_skill_set", { request: createSetRequest }],
+      ["update_skill_set", { request: updateSetRequest }],
+      ["delete_skill_sets", { request: deleteSetsRequest }],
       ["get_workspaces_overview"],
       ["create_workspace", { request: createRequest }],
       ["observe_workspace", { request: workspaceRequest }],
