@@ -8,7 +8,7 @@
 
 - Node.js `22.22.0` 或更高版本
 - pnpm `11.20.0`
-- Rust `stable`（由根目录 `rust-toolchain.toml` 固定，Rust 2024 edition）
+- Rust `1.94.0`（由根目录 `rust-toolchain.toml` 固定，Rust 2021 edition）
 
 ## 命令分组
 
