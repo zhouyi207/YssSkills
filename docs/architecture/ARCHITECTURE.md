@@ -18,13 +18,15 @@ YssSkills 是一个通过 Tauri 提供桌面界面的 Skill 管理器。它需�
 纵切片：
 
 - `src-tauri/Cargo.toml` 声明 Cargo workspace，包含根 `yssskills` Tauri package、
-  `crates/skill-core`、`crates/skill-harness`、`crates/skill-local`、
+  `crates/skill-core`、`crates/skill-harness`、`crates/skill-index`、`crates/skill-local`、
   `crates/skill-registry` 和 `crates/skill-workspace`；
 - `skill-core` 提供纯领域类型、`SKILL.md` frontmatter 解析、marker 规则、名称安全
   规范化和 focused tests；
 - `skill-harness` 提供内置 Harness、检测与路径解析、能力声明以及自定义 adapter；
 - `skill-local` 提供只读扫描/读取/hash、复制、平台 Link、删除以及按显式目标工作的
   有限 watcher；平台 Link 在 Windows 创建 junction，在 macOS/Linux 创建符号链接；
+- `skill-index` 提供独立、可丢弃的 SQLite Skill 派生索引、增量 reconcile、原子 rebuild
+  和 schema 损坏/不兼容时的安全重建；
 - `skill-registry` 提供 skills.sh search/leaderboard 的 blocking client、Next/RSC/JSON
   结构化解析、显式 source kind 保留、GitHub/普通 Git source reference 解析及 typed
   errors；
@@ -55,7 +57,7 @@ Cargo workspace。
 
 ## 3. 总体架构
 
-目标架构采用一个 Tauri 外壳、一个工作区编排 crate、一个纯领域 crate 和三个
+目标架构采用一个 Tauri 外壳、一个工作区编排 crate、一个纯领域 crate 和四个
 职责明确的适配 crate：
 
 ```mermaid
@@ -65,13 +67,16 @@ flowchart TD
     IPC --> AppWorker[yssskills application worker]
     AppWorker --> Workspace[skill-workspace]
     AppWorker --> Registry[skill-registry]
-    AppWorker --> Persistence[SQLite catalog adapter]
+    AppWorker --> Persistence[Filesystem catalog / application state adapter]
+    AppWorker --> Index[skill-index derived SQLite index]
 
     Workspace --> Core[skill-core]
     Workspace --> Harness[skill-harness]
     Workspace --> Local[skill-local]
     Workspace --> Persistence
     Persistence --> Local
+    Index --> Local
+    Index --> Core
 
     Harness --> Core
     Local --> Core
@@ -84,6 +89,7 @@ flowchart TD
 - `skill-workspace` 负责用例编排和部署状态；
 - `skill-core` 不依赖框架或基础设施；
 - `skill-harness`、`skill-local`、`skill-registry` 各自隔离一种外部变化；
+- `skill-index` 只依赖领域值和只读文件系统能力，不拥有 Skill 事实；
 - 任何 crate 都不能通过共享内部模块绕过上述依赖方向；
 - 不允许循环依赖。
 
@@ -96,6 +102,7 @@ flowchart TD
 | `yssskills`       | `yssskills_lib`   | Tauri 启动、application worker、SQLite adapter、commands 和 IPC DTO；保留现有外壳名称。 |
 | `skill-core`      | `skill_core`      | Skill 领域模型、解析结果和纯领域规则。                                                  |
 | `skill-harness`   | `skill_harness`   | Harness 描述、检测、路径和能力适配。                                                    |
+| `skill-index`     | `skill_index`     | 可丢弃的 SQLite Skill 派生索引、查询、reconcile、rebuild 和 schema 自恢复。             |
 | `skill-local`     | `skill_local`     | 本机文件系统上的扫描、安装、监听和变化检测。                                            |
 | `skill-registry`  | `skill_registry`  | 远程 registry 的搜索/leaderboard 响应解析、source reference 和来源分类解析。            |
 | `skill-workspace` | `skill_workspace` | Agents/Project/Linked Workspace 及部署同步编排。                                        |
@@ -114,6 +121,7 @@ members = [
     ".",
     "crates/skill-core",
     "crates/skill-harness",
+    "crates/skill-index",
     "crates/skill-local",
     "crates/skill-registry",
     "crates/skill-workspace",
@@ -219,7 +227,9 @@ Harness 的“检测”遍历 registry 中 adapter 声明的用户级候选路�
 使用 `PathBuf` 或等价的结构化路径，不能通过手工拼接字符串生成跨平台路径。
 内置 adapter 只提供自动检测候选，不拥有用户可编辑的 Agent 名称和路径；用户选择添加后，
 检测结果才转换为根应用层的独立 Agent 配置，Agents Workspace 后续使用配置生成的 adapter
-registry。
+registry。用户目录下的 `.agents/skills` 由 ID 和显示名均为 `agents` 的独立内置 adapter
+表示，检测根为 `.agents`；它与其他 Agent 一样经 Auto Detect 和 Add 进入 Workspace，
+不作为 Codex、GitHub Copilot、Pi 或 DeepSeek Harness 的额外 discovery 目录。
 
 `CustomHarnessDefinition` 的输入中只有 `id`、`display_name` 和
 `global_skills_path` 必填；`project_skills_path`、`config_path` 和 `category`
@@ -249,6 +259,10 @@ registry。
 - **Hash**：`hash_directory` 使用排序后的相对路径、文件内容和 Unix executable
   bits 计算 SHA-256；目录内容遍历不跟随内部的链接，并忽略 `.git`、`.DS_Store`、
   `Thumbs.db`、`.gitignore`、`__pycache__` 以及 `.pyc` 文件。
+- **低成本变化检测**：`inspect_flat_skill_directory` 和 `inspect_skill_filesystem` 读取
+  canonical path、marker mtime/size，并用相对路径、文件 size/mtime 和 Unix executable
+  bits 计算 filesystem metadata fingerprint；该 fingerprint 不读取文件内容，只用于判断
+  是否需要重新 parse 和 content hash，不能代替最终内容 hash。
 - **本地操作**：`copy_skill`、`link_skill` 和 `delete_skill` 分别支持复制、平台
   Link 和删除，并返回明确的 `OperationResult`。`link_skill` 的公开接口不暴露物理
   链接种类；启动时创建的平台 adapter 在 Windows 选择 junction，在 macOS/Linux
@@ -285,6 +299,28 @@ registry。
 复制和 Link 是不同的业务操作语义，必须在结果中明确表示，不能统一伪装成“安装
 成功”；SymbolicLink 与 junction 只是 Link 的平台实现细节，不进入 Workspace、IPC
 或持久化接口。
+
+#### 4.3.1 `skill-index`：可丢弃的持久化派生索引
+
+`skill-index` 回答“如何用可重建的 SQLite materialized index 加速中央 Skill 查询”。它只读
+`.yss-skills/skills`，复用 `skill-local` 的 metadata inspection、解析和 hash 能力；不复制、
+删除或改写 Skill 文件。索引数据库为 Tauri app data 下独立的 `skill-index.sqlite3`，与保存
+Workspace/Binding 的 `yssskills.sqlite3` 隔离。
+
+索引记录沿用现有 `SkillId`，并以 normalized path 建立唯一约束。名称、描述、版本、路径、
+content hash、marker mtime/size、filesystem fingerprint、indexed time、有效/无效状态和 parse
+version 全部是 filesystem SSOT 的派生数据。有效与无效 Skill 分行保存；单个解析失败形成
+diagnostic 并从有效列表排除，不使整个索引不可用。
+
+reconcile 先读取上次 stamp，只对新增或 stamp 变化的 Skill 执行 `read_skill`、frontmatter parse
+和完整目录 hash；未变化记录跳过。扫描与昂贵读取发生在事务外，最终 INSERT/UPDATE/DELETE
+和索引 revision 使用单个 SQLite transaction 原子提交。并发写通过 revision compare-and-swap
+拒绝过期扫描结果；扫描期间文件再次变化时有限重试，不能把旧扫描覆盖到新 filesystem 状态。
+
+rebuild 在事务外从 filesystem 准备完整结果，再在单事务中替换派生行；失败时旧快照仍可读，
+且不会修改真实 Skill。schema 不兼容、integrity check 失败或数据库文件损坏时，独立索引库被
+移动为 `.invalid-*` 备份并创建空索引，再仅从 filesystem rebuild。索引库删除后同样走完整
+rebuild，不需要任何只能从数据库取得的 Skill 数据。
 
 ### 4.4 `skill-registry`：远程来源
 
@@ -412,13 +448,18 @@ reconcile 尚未由 Tauri 应用调度，当前收敛只由用户显式 Sync 发
 
 根 `yssskills` package 通过专用 `yssskills-application` 单线程 worker 拥有
 `Application`、`PersistentCatalog`、Harness registry 和本地文件端口。Tauri async command
-使用 message passing 把阻塞的数据库、扫描、hash 和文件写入工作交给该 worker，不持有
-同步锁跨 I/O；registry blocking client 则在 Tauri `spawn_blocking` 中独立执行。
+使用 message passing 把阻塞的数据库和文件写入工作交给该 worker，不持有同步锁跨 I/O；
+独立的 `yssskills-skill-index` worker 在不占用 application command 队列的情况下执行启动
+reconcile、metadata scan、parse/hash 和 watcher 驱动的索引更新。registry blocking client 则在
+Tauri `spawn_blocking` 中独立执行。两个长期线程均有显式 shutdown、取消标记和 join 生命周期。
 
-`PersistentCatalog` 是 `CentralCatalogPort` 的生产 adapter，组合文件系统 Catalog 与
-SQLite 应用状态。`.yss-skills/skills` 是中央 Skill 身份、内容和位置的唯一事实源：每次
-list/detail 都重新扫描并读取目录，SkillId 由原始目录名确定性派生。SQLite 不保存中央
-Skill 行、来源或物理位置，只持久化：
+`PersistentCatalog` 是 `CentralCatalogPort` 的生产 adapter，组合文件系统 Catalog、SQLite
+应用状态和可丢弃的派生索引。`.yss-skills/skills` 是中央 Skill 身份、内容和位置的唯一事实源；
+SkillId 继续由现有领域规则从原始目录名确定性派生。列表从索引快速返回，detail 和实际文件
+操作仍重新读取 filesystem，发生冲突时 filesystem 结果获胜。应用控制的 import/update/delete
+先提交真实文件，再更新派生索引；索引失败不会通过回滚或删除真实 Skill 来迁就缓存。
+
+应用状态数据库只持久化：
 
 - application settings 与中央 catalog root；
 - Agents/Project/Linked Workspace 定义；
@@ -429,11 +470,14 @@ Skill 行、来源或物理位置，只持久化：
 `agents.json`；文件只包含稳定 Agent ID、可选检测器 ID、显示名称和 Agent 根路径，不包含
 schema/version 字段。内置 Harness 配置只在没有对应用户覆盖时提供自动发现结果。
 
-数据库位于 Tauri app data 目录的 `yssskills.sqlite3`。首次启动且尚未持久化该设置时，
+应用状态数据库位于 Tauri app data 目录的 `yssskills.sqlite3`，派生索引位于同目录独立的
+`skill-index.sqlite3`。首次启动且尚未持久化该设置时，
 中央 catalog root 默认为用户主目录下的 `.yss-skills`（Windows 即
-`C:\Users\<user>\.yss-skills`）；此后以数据库中持久化的设置为准。SQLite schema
-不持久化版本字段，也不提供旧 schema 兼容迁移；数据库为空时只初始化当前表结构。
-连接启用 foreign keys、WAL 和 5 秒 busy timeout。路径以带平台 tag 的 BLOB 保存：
+`C:\Users\<user>\.yss-skills`）；此后以状态数据库中持久化的设置为准。状态库 schema
+不持久化版本字段，也不提供旧 schema 兼容迁移；数据库为空时只初始化当前表结构。索引库
+使用独立的 application ID、schema version 和 integrity check，因为它可以安全整体重建。
+状态库连接启用 foreign keys、WAL 和 5 秒 busy timeout，索引库同样使用 WAL 和 busy timeout。
+路径以无损平台 BLOB 保存：
 Unix 保留原始字节，Windows 保留
 UTF-16LE code units，不能因数据库序列化强迫路径成为 UTF-8。IPC 另行提供可选无损
 字符串与始终可显示的 lossy projection。
@@ -441,9 +485,16 @@ UTF-16LE code units，不能因数据库序列化强迫路径成为 UTF-8。IPC 
 中央库布局为 `skills/<原始目录名>`。导入先写入同名的 `cache/<原始目录名>` staging，
 校验后 rename 到 `skills`；不同 Skill 的原始目录名冲突时明确失败，不追加 UUID 或覆盖
 已有内容。同一进程只补偿删除已经原子取得所有权的路径，无法确认归属的 cache 条目保守
-保留。SQLite schema 不包含 `catalog_skills` 表，deployment binding 的 SkillId 外键也不
-指向数据库 Skill 行；中央目录被手动新增、修改或删除后，下一次扫描直接反映文件系统事实。
-catalog 中已有 Skill 时禁止切换 catalog root。
+保留。状态库 schema 不包含 `catalog_skills` 表，deployment binding 的 SkillId 外键也不
+指向数据库 Skill 行。索引库保存的所有 Skill 字段均可从中央目录恢复，并记录对应 normalized
+catalog root，避免切换目录时暴露另一个 root 的旧快照。
+
+已有可用索引时，应用启动只打开数据库并把快照标记为 stale，立即允许列表读取；后台 worker
+先注册 targeted recursive watcher，再执行启动 reconcile。新增、metadata fingerprint 变化和
+缺失分别形成 INSERT、UPDATE、DELETE，未变化项 SKIP。索引不存在、schema 不兼容或绑定的
+catalog root 不同时，启动阶段先从 filesystem 完整 rebuild 首个可用快照。中央目录被手动
+新增、修改或删除后，运行期 watcher 触发同一 reconcile；应用关闭期间或 watcher 丢失的事件
+由下一次启动 reconcile 恢复。catalog 中已有 Skill 时仍禁止切换 catalog root。
 
 ## 5. Workspace 与部署模型
 
@@ -455,8 +506,9 @@ catalog 中已有 Skill 时禁止切换 catalog root。
 - **Agents Workspace**（`WorkspaceKind::Agents`）：用户级 Agent Skills 的部署视图，
   本身不携带根路径。`resolve_workspace` 对已检测到且支持 Harness global skills
   scope 的 adapter 生成 `Primary` 目标，并将 adapter 声明的额外 global discovery
-  目录作为 `DiscoveryRoot`。Agents Workspace 固定使用 `Link`，应用启动时也会把该
-  Workspace 的持久化模式和已有 bindings 收敛为 `Link`；Windows 创建 junction，
+  目录作为 `DiscoveryRoot`；其中 `agents` adapter 将 `.agents/skills` 解析为自身的
+  `Primary` 目标，而不是 `DiscoveryRoot`。Agents Workspace 固定使用 `Link`，应用
+  启动时也会把该 Workspace 的持久化模式和已有 bindings 收敛为 `Link`；Windows 创建 junction，
   macOS/Linux 创建符号链接，实际链接目标必须是当前中央库
   `.yss-skills/skills/<目录名>` 下的对应 Skill。
 - **Project Workspace**（`WorkspaceKind::Project { root }`）：绑定项目根目录的部署
@@ -560,10 +612,10 @@ Harness 生成不同目标，具体是否可部署由 Harness capabilities 决�
 
 ### 6.3 本地变化
 
-本节描述 watcher 自动调度接入后的必需流程；当前 Tauri 应用尚未接入
-watcher→reconcile 或周期性 reconcile。显式 Sync 已接入中央库更新前的全 Workspace
-候选汇总和更新后的 Workspace 遍历；`WorkspaceEngine` 每次仍只处理传入的单个
-Workspace。
+本节描述 Workspace watcher 自动调度接入后的必需流程；当前 Tauri 应用已经为中央
+`skill-index` 接入 targeted watcher→index reconcile，但尚未接入 watcher→Workspace
+reconcile 或周期性 Workspace reconcile。显式 Sync 已接入中央库更新前的全 Workspace
+候选汇总和更新后的 Workspace 遍历；`WorkspaceEngine` 每次仍只处理传入的单个 Workspace。
 
 1. `skill-local` 的 `WatchManager` 持有 watcher 生命周期并接收 notify 原始事件；
    watcher 将事件去抖、合并，并转换为有限的本地变化类型。
@@ -679,6 +731,7 @@ CRUD、其他 Workspace 编辑和语言切换当前不可用，不得用本地 t
 skill-core       → CoreError
 skill-harness    → HarnessError
 skill-local      → LocalError
+skill-index      → IndexError
 skill-registry   → RegistryError
 skill-workspace  → WorkspaceError
 SQLite adapter   → PersistenceError
@@ -691,6 +744,8 @@ Tauri boundary   → IPC Error DTO
 - library crate 优先使用结构化错误枚举，常见实现为 `thiserror`；
 - 错误代码、类别和安全上下文与展示文案分开；
 - IPC 边界只做一次公开映射，前端不解析错误字符串判断分支；
+- IPC Error DTO 的安全 `context`（例如字段、原因、路径和操作）必须由前端统一错误展示
+  完整呈现；Toast、页面状态、Dialog 和逐项 diagnostics 不得只显示泛化 `message` 而丢弃上下文；
 - 不把失败转换成 `None`、`false`、空集合或看似成功的结果；
 - 文件路径、registry 标识等上下文只在确实有助于诊断时公开，并避免暴露敏感
   配置、认证信息和内部实现细节；
@@ -733,6 +788,7 @@ Tauri boundary   → IPC Error DTO
 | `skill-core`      | `SkillId` 和 metadata 不变量、frontmatter/UTF-8 解析、字段缺失和解析错误。                                                                                                                                                                                                                                                                                                              |
 | `skill-harness`   | 各 Harness 的位置规则、检测结果、能力声明和自定义 adapter；使用 fake 环境，不依赖真实用户配置。                                                                                                                                                                                                                                                                                         |
 | `skill-local`     | 临时目录中的扫描、读取、hash、复制/平台 Link、缺失权限和外部变化；分别验证 Windows junction 与 macOS/Linux 符号链接实现，watcher 测试只覆盖归一化后的行为。                                                                                                                                                                                                                             |
+| `skill-index`     | filesystem-only rebuild、metadata skip、增删改 reconcile、无效 Skill 隔离、原子替换、索引删库恢复和不兼容 schema 安全重建。                                                                                                                                                                                                                                                             |
 | `skill-registry`  | skills.sh JSON/HTML 搜索与 leaderboard 解析（含明确 Next/RSC 容器、escaped payload、空/无效 envelope 和拒绝任意嵌入对象）、source kind 保留、GitHub/source reference 解析（含 drive/UNC/ref 字符和 HTTPS/SSH credential 安全）、URL/status/body-limit/Retry-After（delta/date）/transport kind/无效响应；使用 stdlib local HTTP seam，不依赖线上 registry。detail endpoint 当前未实现。 |
 | `skill-workspace` | 三种 Workspace 的部署状态转换、marker 修改时间选优、中央库收敛、能力不支持和操作后再验证；通过 `LocalSkillPort`/`CentralCatalogPort` seam 验证。                                                                                                                                                                                                                                        |
 | `yssskills`       | 文件系统 Catalog 发现/import/update、确定性 SkillId、SQLite schema initialization/reopen、Workspace/binding 持久化、跨 Workspace 全局候选择优、IPC 请求/响应 DTO 和一次性错误映射；限制 Tauri runtime 测试范围。                                                                                                                                                                        |
@@ -790,6 +846,10 @@ src-tauri/
     ├── skill-harness/
     │   ├── Cargo.toml
     │   └── src/
+    ├── skill-index/
+    │   ├── Cargo.toml
+    │   ├── src/
+    │   └── tests/
     ├── skill-local/
     │   ├── Cargo.toml
     │   ├── src/
@@ -857,6 +917,7 @@ seam 后面。
 - 纯身份、值、解析或规则进入 `skill-core`；
 - 新 Harness 的位置和能力进入 `skill-harness` 的 adapter；
 - 本地磁盘行为进入 `skill-local`；
+- 可完全从 filesystem 重建的查询/变化检测索引进入 `skill-index`；
 - 新远程来源进入 `skill-registry` 的 adapter；
 - 跨多个模块的部署、同步和收敛用例进入 `skill-workspace`；
 - IPC DTO、命令和 UI projection 留在接口层。
@@ -866,6 +927,6 @@ seam 后面。
 复杂度转移给所有调用方。
 
 `PersistentCatalog` 已作为根 application layer 的 `CentralCatalogPort` adapter 接入：
-文件系统负责中央 Skill，SQLite 只负责应用状态。后续若替换或增加其他实现，必须保持同一
-依赖方向，不能让 SQLite 成为 Skill 内容或身份的事实源，也不能让 `skill-core` 或业务 crate
-依赖具体数据库。
+文件系统负责中央 Skill，状态 SQLite 负责应用状态，索引 SQLite 只负责可丢弃的派生查询数据。
+后续若替换或增加其他实现，必须保持同一依赖方向，不能让 SQLite 成为 Skill 内容或身份的
+事实源，也不能让 `skill-core` 或业务 crate 依赖具体数据库。
