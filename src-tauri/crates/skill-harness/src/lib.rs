@@ -596,9 +596,18 @@ struct BuiltinSpec {
 }
 
 const NO_ADDITIONAL: &[&str] = &[];
-const SHARED_AGENTS: &[&str] = &[".agents/skills"];
 
 const BUILTIN_SPECS: &[BuiltinSpec] = &[
+    BuiltinSpec {
+        id: "agents",
+        display_name: "Agents",
+        global: ".agents/skills",
+        detect: ".agents",
+        project: None,
+        additional: NO_ADDITIONAL,
+        category: HarnessCategory::Coding,
+        recursive: false,
+    },
     BuiltinSpec {
         id: "cursor",
         display_name: "Cursor",
@@ -635,7 +644,7 @@ const BUILTIN_SPECS: &[BuiltinSpec] = &[
         global: ".codex/skills",
         detect: ".codex",
         project: None,
-        additional: SHARED_AGENTS,
+        additional: NO_ADDITIONAL,
         category: HarnessCategory::Coding,
         recursive: false,
     },
@@ -725,7 +734,7 @@ const BUILTIN_SPECS: &[BuiltinSpec] = &[
         global: ".copilot/skills",
         detect: ".copilot",
         project: None,
-        additional: SHARED_AGENTS,
+        additional: NO_ADDITIONAL,
         category: HarnessCategory::Coding,
         recursive: false,
     },
@@ -995,7 +1004,7 @@ const BUILTIN_SPECS: &[BuiltinSpec] = &[
         global: ".pi/agent/skills",
         detect: ".pi/agent",
         project: Some(".pi/skills"),
-        additional: SHARED_AGENTS,
+        additional: NO_ADDITIONAL,
         category: HarnessCategory::Coding,
         recursive: false,
     },
@@ -1125,7 +1134,7 @@ const BUILTIN_SPECS: &[BuiltinSpec] = &[
         global: ".dsh/skills",
         detect: ".dsh",
         project: None,
-        additional: SHARED_AGENTS,
+        additional: NO_ADDITIONAL,
         category: HarnessCategory::Coding,
         recursive: false,
     },

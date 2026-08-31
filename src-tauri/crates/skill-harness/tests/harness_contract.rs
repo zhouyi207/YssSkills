@@ -24,7 +24,8 @@ fn absolute_test_skills_path() -> String {
 fn includes_reference_built_in_harnesses() {
     let harnesses = default_harnesses();
 
-    assert_eq!(harnesses.len(), 53);
+    assert_eq!(harnesses.len(), 54);
+    assert_eq!(harness(&harnesses, "agents").display_name(), "Agents");
     assert_eq!(harness(&harnesses, "codex").display_name(), "Codex");
     assert_eq!(
         harness(&harnesses, "claude_code").display_name(),
@@ -43,28 +44,48 @@ fn resolves_home_relative_paths_and_detection_without_scanning_skills() {
     let temp = tempdir().expect("temporary directory");
     let home = temp.path().join("home");
     fs::create_dir_all(home.join(".codex")).expect("codex config directory");
-    fs::create_dir_all(home.join(".agents/skills")).expect("shared discovery directory");
+    fs::create_dir_all(home.join(".agents/skills")).expect("agents skills directory");
     let environment = HarnessEnvironment::new(home.clone(), None);
     let harnesses = default_harnesses();
-    let adapter = harness(&harnesses, "codex");
+    assert!(harnesses.iter().all(|adapter| adapter
+        .additional_global_discovery_paths()
+        .all(|path| path != Path::new(".agents/skills"))));
+    let codex = harness(&harnesses, "codex");
+    let agents = harness(&harnesses, "agents");
 
-    let locations = adapter
+    let codex_locations = codex
         .resolve_locations(&environment, Some(temp.path()))
         .expect("codex locations");
-    let detection = adapter.detect(&environment).expect("codex detection");
+    let codex_detection = codex.detect(&environment).expect("codex detection");
+    let agents_locations = agents
+        .resolve_locations(&environment, Some(temp.path()))
+        .expect("agents locations");
+    let agents_detection = agents.detect(&environment).expect("agents detection");
 
-    assert_eq!(locations.global_skills_dir, home.join(".codex/skills"));
     assert_eq!(
-        locations.project_skills_dir,
+        codex_locations.global_skills_dir,
+        home.join(".codex/skills")
+    );
+    assert_eq!(
+        codex_locations.project_skills_dir,
         Some(temp.path().join(".codex/skills"))
     );
-    assert_eq!(locations.config_dir, Some(home.join(".codex")));
+    assert_eq!(codex_locations.config_dir, Some(home.join(".codex")));
+    assert!(codex_locations.additional_global_discovery_dirs.is_empty());
+    assert_eq!(codex_detection.status, DetectionStatus::Installed);
+    assert_eq!(codex_detection.checked_paths, vec![home.join(".codex")]);
     assert_eq!(
-        locations.additional_global_discovery_dirs,
-        vec![home.join(".agents/skills")]
+        agents_locations.global_skills_dir,
+        home.join(".agents/skills")
     );
-    assert_eq!(detection.status, DetectionStatus::Installed);
-    assert_eq!(detection.checked_paths, vec![home.join(".codex")]);
+    assert_eq!(
+        agents_locations.project_skills_dir,
+        Some(temp.path().join(".agents/skills"))
+    );
+    assert_eq!(agents_locations.config_dir, Some(home.join(".agents")));
+    assert!(agents_locations.additional_global_discovery_dirs.is_empty());
+    assert_eq!(agents_detection.status, DetectionStatus::Installed);
+    assert_eq!(agents_detection.checked_paths, vec![home.join(".agents")]);
 }
 
 #[test]
@@ -116,12 +137,11 @@ fn config_based_harnesses_prefer_existing_platform_config_directory() {
 }
 
 #[test]
-fn preserves_asymmetric_project_paths_and_discovery_only_roots() {
+fn preserves_asymmetric_project_paths() {
     let harnesses = default_harnesses();
     let omp = harness(&harnesses, "omp_agent");
     let opencode = harness(&harnesses, "opencode");
     let pi = harness(&harnesses, "pi");
-    let codex = harness(&harnesses, "codex");
 
     assert_eq!(
         omp.project_relative_skills_path(),
@@ -135,9 +155,6 @@ fn preserves_asymmetric_project_paths_and_discovery_only_roots() {
         pi.project_relative_skills_path(),
         Some(Path::new(".pi/skills"))
     );
-    assert!(codex
-        .additional_global_discovery_paths()
-        .any(|path| path == Path::new(".agents/skills")));
 }
 
 #[test]

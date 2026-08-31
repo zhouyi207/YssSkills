@@ -1690,7 +1690,7 @@ fn target_resolution_agents_uses_a_custom_global_path_as_a_primary_target() {
 }
 
 #[test]
-fn target_resolution_agents_uses_capabilities_and_deduplicates_discovery_roots() {
+fn target_resolution_agents_treats_dot_agents_as_a_primary_agent_target() {
     let temp = tempdir().unwrap();
     let home = temp.path().join("home");
     fs::create_dir_all(home.join(".codex")).unwrap();
@@ -1726,22 +1726,21 @@ fn target_resolution_agents_uses_capabilities_and_deduplicates_discovery_roots()
         .iter()
         .find(|target| target.harness_id.as_str() == "github_copilot")
         .unwrap();
+    let agents = resolution
+        .targets
+        .iter()
+        .find(|target| target.harness_id.as_str() == "agents")
+        .unwrap();
 
     assert_eq!(codex.path, home.join(".codex/skills"));
     assert_eq!(codex.scan_mode, ScanMode::Flat);
     assert_eq!(hermes.path, home.join(".hermes/skills"));
     assert_eq!(hermes.scan_mode, ScanMode::Recursive);
     assert_eq!(copilot.path, home.join(".copilot/skills"));
-    assert!(resolution
-        .targets
-        .iter()
-        .all(|target| target.path != home.join(".agents/skills")));
-    assert_eq!(resolution.discovery_roots.len(), 1);
-    assert_eq!(
-        resolution.discovery_roots[0].path,
-        home.join(".agents/skills")
-    );
-    assert_eq!(resolution.discovery_roots[0].scan_mode, ScanMode::Flat);
+    assert_eq!(agents.path, home.join(".agents/skills"));
+    assert_eq!(agents.role, TargetRole::Primary);
+    assert_eq!(agents.scan_mode, ScanMode::Flat);
+    assert!(resolution.discovery_roots.is_empty());
 }
 
 #[test]
