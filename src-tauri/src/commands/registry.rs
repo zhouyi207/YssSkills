@@ -18,7 +18,7 @@ pub async fn search_registry(
     let limit = request.limit;
     let result = tauri::async_runtime::spawn_blocking(move || client.search(&query, limit))
         .await
-        .map_err(|_| IpcError::blocking_task_failed())?
+        .map_err(IpcError::blocking_task_failed)?
         .map_err(IpcError::from)?;
     Ok(RegistryResultDto::from_search(response_query, result))
 }
@@ -33,7 +33,7 @@ pub async fn get_registry_leaderboard(
     let leaderboard = request.leaderboard.into();
     let result = tauri::async_runtime::spawn_blocking(move || client.leaderboard(leaderboard))
         .await
-        .map_err(|_| IpcError::blocking_task_failed())?
+        .map_err(IpcError::blocking_task_failed)?
         .map_err(IpcError::from)?;
     Ok(RegistryResultDto::from_leaderboard(result))
 }

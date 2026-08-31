@@ -39,6 +39,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::dashboard::get_dashboard_overview,
             commands::skills::list_catalog_skills,
+            commands::skills::rebuild_catalog_index,
             commands::skills::scan_import_folder,
             commands::skills::import_local_skills,
             commands::skills::export_catalog_skills,

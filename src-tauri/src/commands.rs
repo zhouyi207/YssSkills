@@ -17,8 +17,9 @@ fn parse_request<T>(request: Option<Value>) -> Result<T, IpcError>
 where
     T: DeserializeOwned,
 {
-    let request = request.ok_or_else(IpcError::invalid_request_payload)?;
-    serde_json::from_value(request).map_err(|_| IpcError::invalid_request_payload())
+    let request =
+        request.ok_or_else(|| IpcError::invalid_request_payload("request payload is required"))?;
+    serde_json::from_value(request).map_err(IpcError::invalid_request_payload)
 }
 
 async fn run_application<T, F>(handle: ApplicationHandle, operation: F) -> Result<T, IpcError>
@@ -28,7 +29,7 @@ where
 {
     tauri::async_runtime::spawn_blocking(move || handle.execute(operation))
         .await
-        .map_err(|_| IpcError::blocking_task_failed())?
+        .map_err(IpcError::blocking_task_failed)?
         .map_err(Into::into)
 }
 
@@ -54,6 +55,10 @@ mod tests {
 
         assert_eq!(error.code, "request.invalid");
         assert!(!error.retryable);
+        assert!(error
+            .context
+            .get("reason")
+            .is_some_and(|reason| reason.contains("unknown field")));
     }
 
     #[test]
@@ -61,6 +66,10 @@ mod tests {
         let error = parse_request::<TestRequest>(None).unwrap_err();
 
         assert_eq!(error.code, "request.invalid");
+        assert_eq!(
+            error.context.get("reason").map(String::as_str),
+            Some("request payload is required")
+        );
     }
 
     #[test]

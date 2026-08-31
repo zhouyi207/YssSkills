@@ -1,7 +1,8 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    fs,
+    fs, io,
     path::{Component, Path, PathBuf},
+    sync::atomic::AtomicBool,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -11,9 +12,10 @@ use skill_harness::{
     DetectionStatus, HarnessAdapter, HarnessCapabilities, HarnessCategory, HarnessEnvironment,
     HarnessError, HarnessId, HarnessRegistry,
 };
+use skill_index::IndexState;
 use skill_local::{
-    copy_skill, delete_link, link_skill, link_target, ExistingDestination, LocalError,
-    ScanDiagnostic, ScanMode, ScanReport,
+    copy_skill, link_skill, link_target, ExistingDestination, LocalError, ScanDiagnostic, ScanMode,
+    ScanReport,
 };
 use skill_workspace::{
     choose_newest_local, resolve_workspace, CatalogFailure, CentralCatalogPort,
@@ -25,7 +27,8 @@ use thiserror::Error;
 
 use crate::agent_config::{AgentConfigError, AgentConfigStore, StoredAgentConfig};
 use crate::persistence::{
-    CatalogActivityKind, PersistenceError, PersistentCatalog, StoredWorkspace,
+    CatalogActivityKind, CatalogIndexWorkerConfig, PersistenceError, PersistentCatalog,
+    StoredWorkspace,
 };
 
 const MAX_WORKSPACE_NAME_CHARS: usize = 120;
@@ -102,6 +105,40 @@ pub struct ApplicationDiagnostic {
 pub struct CatalogSkillSummary {
     pub snapshot: CentralSkillSnapshot,
     pub deployment_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct CatalogSkillList {
+    pub skills: Vec<CatalogSkillSummary>,
+    pub diagnostics: Vec<CatalogSkillIndexDiagnostic>,
+    pub freshness: CatalogIndexFreshness,
+    pub revision: i64,
+    pub last_reconciled_at_epoch_millis: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CatalogSkillIndexDiagnostic {
+    pub skill_id: SkillId,
+    pub path: PathBuf,
+    pub kind: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogIndexFreshness {
+    Fresh,
+    Revalidating,
+    Stale,
+}
+
+#[derive(Debug, Clone)]
+pub struct CatalogIndexRebuildOutcome {
+    pub inserted: usize,
+    pub updated: usize,
+    pub removed: usize,
+    pub unchanged: usize,
+    pub invalid: usize,
+    pub revision: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -346,6 +383,10 @@ impl Application {
         };
         application.validate_catalog_root_against_workspaces(application.catalog.catalog_root())?;
         Ok(application)
+    }
+
+    pub(crate) fn catalog_index_worker_config(&self) -> CatalogIndexWorkerConfig {
+        self.catalog.catalog_index_worker_config()
     }
 
     fn agent_configurations(&self) -> Result<Vec<AgentConfiguration>, ApplicationError> {
@@ -632,53 +673,61 @@ impl Application {
 
     fn delete_skills_root(&self, skills_root: &Path) -> Result<usize, ApplicationError> {
         let skills_root = skills_root.to_path_buf();
-        match link_target(&skills_root) {
-            Ok(Some(_)) => {
-                delete_link(&skills_root)?;
-                return Ok(0);
-            }
-            Ok(None) => {}
-            Err(LocalError::PathNotFound { .. }) => return Ok(0),
-            Err(error) => return Err(error.into()),
-        }
-
-        let broken_links = self.local.remove_broken_links(&skills_root)?;
-        let report = self.local.scan(&skills_root, ScanMode::Flat)?;
-        let mut skill_paths = report
-            .skills
-            .into_iter()
-            .map(|skill| skill.path)
-            .chain(
-                report
-                    .diagnostics
-                    .into_iter()
-                    .map(|diagnostic| diagnostic.path),
-            )
-            .collect::<Vec<_>>();
-        skill_paths.sort();
-        skill_paths.dedup();
-        for path in &skill_paths {
-            self.local.delete(path)?;
-        }
-        let mut entries = fs::read_dir(&skills_root).map_err(|source| LocalError::Io {
-            path: skills_root.clone(),
-            source,
-        })?;
-        match entries.next() {
-            None => fs::remove_dir(&skills_root).map_err(|source| LocalError::Io {
-                path: skills_root,
-                source,
-            })?,
-            Some(Ok(_)) => {}
-            Some(Err(source)) => {
+        let entries = match fs::read_dir(&skills_root) {
+            Ok(entries) => entries,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(0),
+            Err(source) => {
                 return Err(LocalError::Io {
                     path: skills_root,
                     source,
                 }
                 .into())
             }
+        };
+        let mut entry_paths = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|source| LocalError::Io {
+                path: skills_root.clone(),
+                source,
+            })?;
+            entry_paths.push(entry.path());
         }
-        Ok(broken_links.len() + skill_paths.len())
+        let deleted_skill_count = entry_paths.len();
+
+        for path in entry_paths {
+            Self::delete_skills_entry(&path)?;
+        }
+        Ok(deleted_skill_count)
+    }
+
+    fn delete_skills_entry(path: &Path) -> Result<(), ApplicationError> {
+        // `remove_dir_all` removes directory links without following them. Regular files use the
+        // file operation only when the directory operation reports that the entry is not a directory.
+        match fs::remove_dir_all(path) {
+            Ok(()) => {}
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+            Err(source) if source.kind() == io::ErrorKind::NotADirectory => {
+                match fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+                    Err(source) => {
+                        return Err(LocalError::Io {
+                            path: path.to_path_buf(),
+                            source,
+                        }
+                        .into())
+                    }
+                }
+            }
+            Err(source) => {
+                return Err(LocalError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                }
+                .into())
+            }
+        }
+        Ok(())
     }
 
     pub fn dashboard_overview(&self) -> Result<DashboardOverview, ApplicationError> {
@@ -737,15 +786,15 @@ impl Application {
         })
     }
 
-    pub fn list_catalog_skills(&self) -> Result<Vec<CatalogSkillSummary>, ApplicationError> {
+    pub fn list_catalog_skills_view(&self) -> Result<CatalogSkillList, ApplicationError> {
         let bindings = self.catalog.all_bindings()?;
         let mut deployment_counts = HashMap::<SkillId, usize>::new();
         for binding in bindings {
             *deployment_counts.entry(binding.key.skill_id).or_default() += 1;
         }
-        Ok(self
-            .catalog
-            .list_catalog_skills()?
+        let view = self.catalog.catalog_index_view()?;
+        let skills = view
+            .skills
             .into_iter()
             .map(|snapshot| CatalogSkillSummary {
                 deployment_count: deployment_counts
@@ -754,7 +803,45 @@ impl Application {
                     .unwrap_or_default(),
                 snapshot,
             })
-            .collect())
+            .collect();
+        let diagnostics = view
+            .diagnostics
+            .into_iter()
+            .map(|diagnostic| CatalogSkillIndexDiagnostic {
+                skill_id: diagnostic.skill_id,
+                path: diagnostic.path,
+                kind: diagnostic.kind,
+                message: diagnostic.message,
+            })
+            .collect();
+        let freshness = match view.state {
+            IndexState::Ready => CatalogIndexFreshness::Fresh,
+            IndexState::Reconciling => CatalogIndexFreshness::Revalidating,
+            IndexState::Uninitialized | IndexState::Stale => CatalogIndexFreshness::Stale,
+        };
+        Ok(CatalogSkillList {
+            skills,
+            diagnostics,
+            freshness,
+            revision: view.revision,
+            last_reconciled_at_epoch_millis: view.last_reconciled_at_epoch_millis,
+        })
+    }
+
+    pub fn rebuild_catalog_index(
+        &mut self,
+    ) -> Result<CatalogIndexRebuildOutcome, ApplicationError> {
+        let cancellation = AtomicBool::new(false);
+        let report = self.catalog.rebuild_catalog_index(&cancellation)?;
+        let revision = self.catalog.catalog_index_view()?.revision;
+        Ok(CatalogIndexRebuildOutcome {
+            inserted: report.inserted.len(),
+            updated: report.updated.len(),
+            removed: report.removed.len(),
+            unchanged: report.unchanged.len(),
+            invalid: report.invalid.len(),
+            revision,
+        })
     }
 
     pub fn catalog_skill_detail(
@@ -1430,7 +1517,10 @@ impl Application {
             }
 
             self.catalog.delete_bindings_for_skill(*skill_id)?;
-            self.local.delete(&snapshot.installed.location)?;
+            let deleted_path = snapshot.installed.location;
+            self.local.delete(&deleted_path)?;
+            self.catalog
+                .remove_catalog_skill_from_index(*skill_id, &deleted_path)?;
         }
 
         Ok(skill_ids)
@@ -2236,6 +2326,7 @@ mod tests {
         let mut application = test_application(root.path());
         let home = application.environment.home_dir().to_path_buf();
         fs::create_dir_all(home.join(".codex/skills")).unwrap();
+        fs::create_dir_all(home.join(".agents/skills")).unwrap();
         fs::create_dir_all(home.join(".omp/agent/skills")).unwrap();
         fs::create_dir_all(home.join(".config/opencode/skills")).unwrap();
         fs::create_dir_all(home.join(".claude")).unwrap();
@@ -2254,7 +2345,10 @@ mod tests {
             .into_iter()
             .map(|agent| agent.detector_id.to_string())
             .collect::<Vec<_>>();
-        assert_eq!(detector_ids, vec!["codex", "omp_agent", "opencode"]);
+        assert_eq!(
+            detector_ids,
+            vec!["agents", "codex", "omp_agent", "opencode"]
+        );
         application.add_detected_agents(detector_ids).unwrap();
 
         let overview = application.workspaces_overview().unwrap();
@@ -2264,14 +2358,17 @@ mod tests {
             .map(|harness| harness.id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(harness_ids, vec!["codex", "omp_agent", "opencode"]);
+        assert_eq!(
+            harness_ids,
+            vec!["agents", "codex", "omp_agent", "opencode"]
+        );
         assert_eq!(
             application
                 .dashboard_overview()
                 .unwrap()
                 .counts
                 .detected_harnesses,
-            3
+            4
         );
         assert_eq!(
             overview.harnesses[0]
@@ -2279,8 +2376,100 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .global_skills_path,
-            home.join(".codex/skills")
+            home.join(".agents/skills")
         );
+    }
+
+    #[test]
+    fn dot_agents_skills_reconcile_through_the_agents_agent() {
+        let root = tempdir().unwrap();
+        let mut application = test_application(root.path());
+        let home = application.environment.home_dir().to_path_buf();
+        let skill_path = home.join(".agents/skills/shared-skill");
+        write_test_skill(&skill_path, "shared-skill");
+
+        let detected = application.detect_agents().unwrap();
+        let agents = detected
+            .agents
+            .iter()
+            .find(|agent| agent.detector_id.as_str() == "agents")
+            .unwrap();
+        assert_eq!(agents.display_name, "Agents");
+        assert_eq!(agents.agent_root, home.join(".agents"));
+        assert_eq!(agents.skill_count, 1);
+
+        application
+            .add_detected_agents(vec!["agents".to_owned()])
+            .unwrap();
+        let agents_workspace_id = application
+            .catalog
+            .list_workspaces()
+            .unwrap()
+            .into_iter()
+            .find(|stored| matches!(stored.workspace.kind, WorkspaceKind::Agents))
+            .unwrap()
+            .workspace
+            .id;
+
+        let outcome = application
+            .reconcile_workspace(&agents_workspace_id.to_string())
+            .unwrap();
+
+        assert_eq!(outcome.requested.imported.len(), 1);
+        let bindings = application.catalog.bindings(agents_workspace_id).unwrap();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].key.harness_id.as_str(), "agents");
+        assert_eq!(bindings[0].target_path, skill_path);
+        assert_eq!(bindings[0].deployment_mode, DeploymentMode::Link);
+    }
+
+    #[test]
+    fn delete_agents_clears_the_skills_root_without_following_links() {
+        let root = tempdir().unwrap();
+        let mut application = test_application(root.path());
+        let home = application.environment.home_dir().to_path_buf();
+        let skills_root = home.join(".agents/skills");
+        let external_skill = home.join("external/linked-skill");
+        write_test_skill(&external_skill, "linked-skill");
+        write_test_skill(&skills_root.join("ordinary-skill"), "ordinary-skill");
+        fs::write(skills_root.join("loose-file.txt"), "remove this too").unwrap();
+        link_skill(
+            &external_skill,
+            &skills_root.join("linked-skill"),
+            ExistingDestination::Reject,
+        )
+        .unwrap();
+        application
+            .add_detected_agents(vec!["agents".to_owned()])
+            .unwrap();
+
+        #[cfg(windows)]
+        let skills_directory_handle = {
+            use std::os::windows::fs::OpenOptionsExt;
+
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(&skills_root)
+                .unwrap()
+        };
+
+        let outcome = application
+            .delete_agents(vec!["agents".to_owned()])
+            .unwrap();
+
+        #[cfg(windows)]
+        drop(skills_directory_handle);
+        assert_eq!(outcome.deleted_skill_count, 3);
+        assert!(skills_root.is_dir());
+        assert_eq!(fs::read_dir(&skills_root).unwrap().count(), 0);
+        assert!(external_skill.exists());
+        assert!(application
+            .workspaces_overview()
+            .unwrap()
+            .harnesses
+            .is_empty());
     }
 
     #[test]

@@ -14,13 +14,14 @@ use skill_workspace::{
 use crate::{
     application::{
         AddDetectedAgentsOutcome, AgentDetectionDiagnostic, AgentDetectionOutcome, AppSettings,
-        CatalogSkillDetail, CatalogSkillSummary, CopyProjectAgentSkillsInput,
-        CopyProjectAgentSkillsOutcome, CreateWorkspaceInput, CreateWorkspaceKind,
-        DashboardOverview, DeleteAgentsOutcome, DeleteProjectAgentsOutcome, DetectedAgent,
-        ExportSkillsOutcome, HarnessOverview, HarnessProbe, ImportCandidate,
-        ImportFolderDiagnostic, ImportFolderPreview, ImportSkillsOutcome, ProjectAgentOverview,
-        PropagationOutcome, SaveAgentInput, SaveAgentOutcome, WorkspaceObservation,
-        WorkspaceReconcileOutcome, WorkspaceSummary, WorkspacesOverview,
+        CatalogIndexFreshness, CatalogIndexRebuildOutcome, CatalogSkillDetail, CatalogSkillList,
+        CatalogSkillSummary, CopyProjectAgentSkillsInput, CopyProjectAgentSkillsOutcome,
+        CreateWorkspaceInput, CreateWorkspaceKind, DashboardOverview, DeleteAgentsOutcome,
+        DeleteProjectAgentsOutcome, DetectedAgent, ExportSkillsOutcome, HarnessOverview,
+        HarnessProbe, ImportCandidate, ImportFolderDiagnostic, ImportFolderPreview,
+        ImportSkillsOutcome, ProjectAgentOverview, PropagationOutcome, SaveAgentInput,
+        SaveAgentOutcome, WorkspaceObservation, WorkspaceReconcileOutcome, WorkspaceSummary,
+        WorkspacesOverview,
     },
     ipc::IpcError,
     persistence::StoredWorkspace,
@@ -108,6 +109,44 @@ impl From<DashboardOverview> for DashboardOverviewDto {
 #[serde(rename_all = "camelCase")]
 pub struct CatalogSkillsResponseDto {
     pub skills: Vec<CatalogSkillSummaryDto>,
+    pub diagnostics: Vec<CatalogSkillIndexDiagnosticDto>,
+    pub index: CatalogIndexStatusDto,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogSkillIndexDiagnosticDto {
+    pub skill_id: String,
+    pub path: PathDto,
+    pub kind: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogIndexStatusDto {
+    pub freshness: CatalogIndexFreshnessDto,
+    pub revision: i64,
+    pub last_reconciled_at_epoch_millis: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CatalogIndexFreshnessDto {
+    Fresh,
+    Revalidating,
+    Stale,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebuildCatalogIndexResponseDto {
+    pub inserted: usize,
+    pub updated: usize,
+    pub removed: usize,
+    pub unchanged: usize,
+    pub invalid: usize,
+    pub revision: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -209,6 +248,52 @@ pub enum SkillSourceDto {
 impl From<CatalogSkillSummary> for CatalogSkillSummaryDto {
     fn from(value: CatalogSkillSummary) -> Self {
         catalog_skill_summary(value.snapshot, value.deployment_count)
+    }
+}
+
+impl From<CatalogSkillList> for CatalogSkillsResponseDto {
+    fn from(value: CatalogSkillList) -> Self {
+        Self {
+            skills: value.skills.into_iter().map(Into::into).collect(),
+            diagnostics: value
+                .diagnostics
+                .into_iter()
+                .map(|diagnostic| CatalogSkillIndexDiagnosticDto {
+                    skill_id: diagnostic.skill_id.to_string(),
+                    path: PathDto::from(diagnostic.path.as_path()),
+                    kind: diagnostic.kind,
+                    message: diagnostic.message,
+                })
+                .collect(),
+            index: CatalogIndexStatusDto {
+                freshness: value.freshness.into(),
+                revision: value.revision,
+                last_reconciled_at_epoch_millis: value.last_reconciled_at_epoch_millis,
+            },
+        }
+    }
+}
+
+impl From<CatalogIndexFreshness> for CatalogIndexFreshnessDto {
+    fn from(value: CatalogIndexFreshness) -> Self {
+        match value {
+            CatalogIndexFreshness::Fresh => Self::Fresh,
+            CatalogIndexFreshness::Revalidating => Self::Revalidating,
+            CatalogIndexFreshness::Stale => Self::Stale,
+        }
+    }
+}
+
+impl From<CatalogIndexRebuildOutcome> for RebuildCatalogIndexResponseDto {
+    fn from(value: CatalogIndexRebuildOutcome) -> Self {
+        Self {
+            inserted: value.inserted,
+            updated: value.updated,
+            removed: value.removed,
+            unchanged: value.unchanged,
+            invalid: value.invalid,
+            revision: value.revision,
+        }
     }
 }
 

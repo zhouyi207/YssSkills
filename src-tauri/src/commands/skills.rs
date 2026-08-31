@@ -5,10 +5,10 @@ use tauri::State;
 use crate::{
     commands::{parse_request, run_application},
     ipc::{
-        CatalogSkillDetailDto, CatalogSkillSummaryDto, CatalogSkillsResponseDto,
-        DeleteCatalogSkillsRequestDto, DeleteCatalogSkillsResponseDto,
-        ExportCatalogSkillsRequestDto, ExportCatalogSkillsResponseDto, ImportLocalSkillsRequestDto,
-        ImportLocalSkillsResponseDto, IpcError, ScanImportFolderRequestDto,
+        CatalogSkillDetailDto, CatalogSkillsResponseDto, DeleteCatalogSkillsRequestDto,
+        DeleteCatalogSkillsResponseDto, ExportCatalogSkillsRequestDto,
+        ExportCatalogSkillsResponseDto, ImportLocalSkillsRequestDto, ImportLocalSkillsResponseDto,
+        IpcError, RebuildCatalogIndexResponseDto, ScanImportFolderRequestDto,
         ScanImportFolderResponseDto, SkillIdRequestDto,
     },
     state::AppState,
@@ -19,15 +19,21 @@ pub async fn list_catalog_skills(
     state: State<'_, AppState>,
 ) -> Result<CatalogSkillsResponseDto, IpcError> {
     let skills = run_application(state.application.clone(), |application| {
-        application.list_catalog_skills()
+        application.list_catalog_skills_view()
     })
     .await?;
-    Ok(CatalogSkillsResponseDto {
-        skills: skills
-            .into_iter()
-            .map(CatalogSkillSummaryDto::from)
-            .collect(),
+    Ok(skills.into())
+}
+
+#[tauri::command]
+pub async fn rebuild_catalog_index(
+    state: State<'_, AppState>,
+) -> Result<RebuildCatalogIndexResponseDto, IpcError> {
+    let outcome = run_application(state.application.clone(), |application| {
+        application.rebuild_catalog_index()
     })
+    .await?;
+    Ok(outcome.into())
 }
 
 #[tauri::command]

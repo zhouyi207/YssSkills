@@ -1,3 +1,6 @@
 mod sqlite;
 
-pub use sqlite::{CatalogActivityKind, PersistenceError, PersistentCatalog, StoredWorkspace};
+pub use sqlite::{
+    CatalogActivityKind, CatalogIndexWorkerConfig, PersistenceError, PersistentCatalog,
+    StoredWorkspace,
+};

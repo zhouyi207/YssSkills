@@ -2,6 +2,7 @@ use std::{
     ffi::OsString,
     fs, io,
     path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -13,6 +14,10 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use skill_core::{InstalledSkill, SkillId, SkillSource};
 use skill_harness::HarnessId;
+use skill_index::{
+    IndexDiagnostic, IndexError, IndexState, IndexedSkill, ReconcileReport as IndexReconcileReport,
+    SkillIndex,
+};
 use skill_local::{
     copy_skill, read_skill, scan_directory, ExistingDestination, LocalError, ScanMode, ScannedSkill,
 };
@@ -25,6 +30,7 @@ use thiserror::Error;
 const CATALOG_ROOT_KEY: &str = "catalog_root";
 const CACHE_DIRECTORY_NAME: &str = "cache";
 const SKILLS_DIRECTORY_NAME: &str = "skills";
+const SKILL_INDEX_DATABASE_NAME: &str = "skill-index.sqlite3";
 
 #[derive(Debug, Clone)]
 pub struct StoredWorkspace {
@@ -37,6 +43,21 @@ pub struct StoredWorkspace {
 pub struct CatalogActivity {
     pub occurred_at_epoch_seconds: i64,
     pub kind: CatalogActivityKind,
+}
+
+#[derive(Debug, Clone)]
+pub struct CatalogIndexView {
+    pub skills: Vec<CentralSkillSnapshot>,
+    pub diagnostics: Vec<IndexDiagnostic>,
+    pub state: IndexState,
+    pub revision: i64,
+    pub last_reconciled_at_epoch_millis: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogIndexWorkerConfig {
+    pub database_path: PathBuf,
+    pub skills_root: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +86,21 @@ pub enum PersistenceError {
         operation: &'static str,
         #[source]
         source: Box<LocalError>,
+    },
+    #[error("derived skill index operation {operation} failed")]
+    Index {
+        operation: &'static str,
+        #[source]
+        source: Box<IndexError>,
+    },
+    #[error(
+        "derived skill index operation {operation} failed after filesystem commit at {path:?}"
+    )]
+    IndexAfterFilesystemCommit {
+        operation: &'static str,
+        path: PathBuf,
+        #[source]
+        source: Box<IndexError>,
     },
     #[error("persisted {entity} field {field} is invalid")]
     InvalidData {
@@ -108,6 +144,13 @@ impl PersistenceError {
         }
     }
 
+    fn index(operation: &'static str, source: IndexError) -> Self {
+        Self::Index {
+            operation,
+            source: Box::new(source),
+        }
+    }
+
     fn into_catalog_failure(self) -> CatalogFailure {
         match self {
             Self::InvalidData { entity, field } => {
@@ -124,6 +167,7 @@ impl PersistenceError {
 pub struct PersistentCatalog {
     connection: Connection,
     catalog_root: PathBuf,
+    skill_index: SkillIndex,
 }
 
 impl PersistentCatalog {
@@ -132,6 +176,7 @@ impl PersistentCatalog {
         default_catalog_root: impl AsRef<Path>,
     ) -> Result<Self, PersistenceError> {
         let database_path = database_path.as_ref();
+        let skill_index_database_path = database_path.with_file_name(SKILL_INDEX_DATABASE_NAME);
         if let Some(parent) = database_path
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
@@ -187,9 +232,33 @@ impl PersistentCatalog {
             .map_err(|source| PersistenceError::io("create_catalog_root", &catalog_root, source))?;
 
         ensure_catalog_directories(&catalog_root)?;
+        let (mut skill_index, index_status) = SkillIndex::open(&skill_index_database_path)
+            .map_err(|source| PersistenceError::index("open", source))?;
+        if let Some(backup) = index_status.recovered_from {
+            eprintln!(
+                "recovered the derived skill index after moving the unusable database to {}",
+                backup.display()
+            );
+        }
+        let skills_root = catalog_root.join(SKILLS_DIRECTORY_NAME);
+        let needs_rebuild = index_status.needs_rebuild
+            || !skill_index
+                .matches_root(&skills_root)
+                .map_err(|source| PersistenceError::index("validate_catalog_root", source))?;
+        if needs_rebuild {
+            let cancellation = AtomicBool::new(false);
+            skill_index
+                .rebuild(&skills_root, &cancellation)
+                .map_err(|source| PersistenceError::index("initial_rebuild", source))?;
+        } else {
+            skill_index
+                .mark_stale()
+                .map_err(|source| PersistenceError::index("mark_startup_stale", source))?;
+        }
         let mut catalog = Self {
             connection,
             catalog_root,
+            skill_index,
         };
         catalog.ensure_agents_workspace()?;
         Ok(catalog)
@@ -197,6 +266,22 @@ impl PersistentCatalog {
 
     pub fn catalog_root(&self) -> &Path {
         &self.catalog_root
+    }
+
+    pub fn catalog_index_worker_config(&self) -> CatalogIndexWorkerConfig {
+        CatalogIndexWorkerConfig {
+            database_path: self.skill_index.database_path().to_path_buf(),
+            skills_root: self.catalog_root.join(SKILLS_DIRECTORY_NAME),
+        }
+    }
+
+    pub fn rebuild_catalog_index(
+        &mut self,
+        cancellation: &AtomicBool,
+    ) -> Result<IndexReconcileReport, PersistenceError> {
+        self.skill_index
+            .rebuild(&self.catalog_root.join(SKILLS_DIRECTORY_NAME), cancellation)
+            .map_err(|source| PersistenceError::index("rebuild", source))
     }
 
     pub fn set_catalog_root(&mut self, root: PathBuf) -> Result<(), PersistenceError> {
@@ -223,6 +308,17 @@ impl PersistentCatalog {
             )
             .map_err(|source| PersistenceError::database("update_catalog_root", source))?;
         self.catalog_root = root;
+        let cancellation = AtomicBool::new(false);
+        self.skill_index
+            .rebuild(
+                &self.catalog_root.join(SKILLS_DIRECTORY_NAME),
+                &cancellation,
+            )
+            .map_err(|source| PersistenceError::IndexAfterFilesystemCommit {
+                operation: "rebuild_after_catalog_root_update",
+                path: self.catalog_root.clone(),
+                source: Box::new(source),
+            })?;
         Ok(())
     }
 
@@ -346,69 +442,68 @@ impl PersistentCatalog {
             })
     }
 
+    pub fn catalog_index_view(&self) -> Result<CatalogIndexView, PersistenceError> {
+        let snapshot = self
+            .skill_index
+            .snapshot()
+            .map_err(|source| PersistenceError::index("query_snapshot", source))?;
+        Ok(CatalogIndexView {
+            skills: snapshot
+                .skills
+                .into_iter()
+                .map(snapshot_from_indexed)
+                .collect(),
+            diagnostics: snapshot.diagnostics,
+            state: snapshot.state,
+            revision: snapshot.revision,
+            last_reconciled_at_epoch_millis: snapshot.last_reconciled_at_epoch_millis,
+        })
+    }
+
     pub fn list_catalog_skills(&self) -> Result<Vec<CentralSkillSnapshot>, PersistenceError> {
-        let skills_root = self.catalog_root.join(SKILLS_DIRECTORY_NAME);
-        let report = scan_directory(&skills_root, ScanMode::Flat)
-            .map_err(|source| PersistenceError::local("scan_catalog_skills", source))?;
-        if let Some(diagnostic) = report.diagnostics.into_iter().next() {
-            return Err(PersistenceError::local(
-                "read_catalog_skill",
-                diagnostic.error,
-            ));
-        }
-        let mut snapshots = report
-            .skills
-            .into_iter()
-            .map(|scanned| {
-                let directory_name =
-                    scanned
-                        .path
-                        .file_name()
-                        .ok_or(PersistenceError::InvalidData {
-                            entity: "filesystem_catalog",
-                            field: "directory_name",
-                        })?;
-                let skill_id = SkillId::from_directory_name(directory_name);
-                Ok(snapshot_from_scanned(
-                    skill_id,
-                    SkillSource::Local {
-                        path: scanned.path.clone(),
-                    },
-                    scanned,
-                ))
-            })
-            .collect::<Result<Vec<_>, PersistenceError>>()?;
-        snapshots.sort_by(|left, right| {
-            left.installed
-                .metadata
-                .name()
-                .to_lowercase()
-                .cmp(&right.installed.metadata.name().to_lowercase())
-                .then_with(|| {
-                    left.installed
-                        .id
-                        .to_string()
-                        .cmp(&right.installed.id.to_string())
-                })
-        });
-        Ok(snapshots)
+        Ok(self.catalog_index_view()?.skills)
     }
 
     pub fn catalog_skill(
         &self,
         skill_id: SkillId,
     ) -> Result<(CentralSkillSnapshot, ScannedSkill), PersistenceError> {
-        let snapshot = self
-            .list_catalog_skills()?
+        let indexed_path = self
+            .skill_index
+            .skill(skill_id)
+            .map_err(|source| PersistenceError::index("query_skill", source))?
+            .map(|indexed| indexed.path);
+        let path = match indexed_path {
+            Some(path) if path.is_dir() => path,
+            _ => self.find_catalog_skill_path(skill_id)?,
+        };
+        let scanned = read_skill(&path)
+            .map_err(|source| PersistenceError::local("read_catalog_skill", source))?;
+        let snapshot = snapshot_from_scanned_ref(
+            skill_id,
+            SkillSource::Local {
+                path: scanned.path.clone(),
+            },
+            &scanned,
+        );
+        Ok((snapshot, scanned))
+    }
+
+    fn find_catalog_skill_path(&self, skill_id: SkillId) -> Result<PathBuf, PersistenceError> {
+        let skills_root = self.catalog_root.join(SKILLS_DIRECTORY_NAME);
+        let report = scan_directory(&skills_root, ScanMode::Flat)
+            .map_err(|source| PersistenceError::local("scan_catalog_skills", source))?;
+        report
+            .skills
             .into_iter()
-            .find(|snapshot| snapshot.installed.id == skill_id)
+            .find_map(|scanned| {
+                let directory_name = scanned.path.file_name()?;
+                (SkillId::from_directory_name(directory_name) == skill_id).then_some(scanned.path)
+            })
             .ok_or_else(|| PersistenceError::NotFound {
                 entity: "skill",
                 id: skill_id.to_string(),
-            })?;
-        let scanned = read_skill(&snapshot.installed.location)
-            .map_err(|source| PersistenceError::local("read_catalog_skill", source))?;
-        Ok((snapshot, scanned))
+            })
     }
 
     pub fn all_bindings(&self) -> Result<Vec<DeploymentBinding>, PersistenceError> {
@@ -449,6 +544,20 @@ impl PersistentCatalog {
             )
             .map_err(|source| PersistenceError::database("delete_skill_bindings", source))?;
         Ok(())
+    }
+
+    pub fn remove_catalog_skill_from_index(
+        &mut self,
+        skill_id: SkillId,
+        deleted_path: &Path,
+    ) -> Result<(), PersistenceError> {
+        self.skill_index.remove_skill(skill_id).map_err(|source| {
+            PersistenceError::IndexAfterFilesystemCommit {
+                operation: "remove_deleted_skill",
+                path: deleted_path.to_path_buf(),
+                source: Box::new(source),
+            }
+        })
     }
 
     pub fn delete_bindings_for_harness_workspace(
@@ -652,6 +761,14 @@ impl CentralCatalogPort for PersistentCatalog {
                 return Err(error.into_catalog_failure());
             }
         };
+        self.skill_index
+            .refresh_skill(skill_id, &final_path)
+            .map_err(|source| PersistenceError::IndexAfterFilesystemCommit {
+                operation: "index_imported_skill",
+                path: final_path.clone(),
+                source: Box::new(source),
+            })
+            .map_err(PersistenceError::into_catalog_failure)?;
         if let Ok(occurred_at) = unix_timestamp() {
             if self
                 .connection
@@ -694,6 +811,14 @@ impl CentralCatalogPort for PersistentCatalog {
         .map_err(CatalogFailure::local_operation)?;
         let updated =
             read_skill(&current.installed.location).map_err(CatalogFailure::local_operation)?;
+        self.skill_index
+            .refresh_skill(*skill_id, &current.installed.location)
+            .map_err(|source| PersistenceError::IndexAfterFilesystemCommit {
+                operation: "index_updated_skill",
+                path: current.installed.location.clone(),
+                source: Box::new(source),
+            })
+            .map_err(PersistenceError::into_catalog_failure)?;
         if self
             .connection
             .execute(
@@ -1027,6 +1152,42 @@ fn snapshot_from_scanned(
     }
 }
 
+fn snapshot_from_scanned_ref(
+    skill_id: SkillId,
+    source: SkillSource,
+    scanned: &ScannedSkill,
+) -> CentralSkillSnapshot {
+    CentralSkillSnapshot {
+        installed: InstalledSkill {
+            id: skill_id,
+            metadata: scanned.document.metadata().clone(),
+            location: scanned.path.clone(),
+            source,
+            content_hash: scanned.content_hash,
+        },
+        version: SkillVersion {
+            content_hash: scanned.content_hash,
+            marker_modified_at: scanned.marker_modified_at,
+        },
+    }
+}
+
+fn snapshot_from_indexed(indexed: IndexedSkill) -> CentralSkillSnapshot {
+    CentralSkillSnapshot {
+        installed: InstalledSkill {
+            id: indexed.id,
+            metadata: indexed.metadata,
+            location: indexed.path.clone(),
+            source: SkillSource::Local { path: indexed.path },
+            content_hash: indexed.content_hash,
+        },
+        version: SkillVersion {
+            content_hash: indexed.content_hash,
+            marker_modified_at: indexed.marker_modified_at,
+        },
+    }
+}
+
 fn decode_required_path(
     value: Option<&[u8]>,
     entity: &'static str,
@@ -1210,13 +1371,16 @@ mod tests {
     }
 
     #[test]
-    fn catalog_skills_are_discovered_from_the_filesystem_without_a_database_table() {
+    fn catalog_skills_are_indexed_from_the_filesystem_without_a_state_database_table() {
         let root = tempdir().unwrap();
         let database = root.path().join("state.sqlite3");
         let catalog_root = root.path().join("catalog");
         let skill_path = catalog_root.join("skills/filesystem-skill");
-        let catalog = PersistentCatalog::open(&database, &catalog_root).unwrap();
+        let mut catalog = PersistentCatalog::open(&database, &catalog_root).unwrap();
         write_skill(&skill_path, "filesystem-skill", "filesystem body");
+        catalog
+            .rebuild_catalog_index(&AtomicBool::new(false))
+            .unwrap();
 
         let skills = catalog.list_catalog_skills().unwrap();
 
