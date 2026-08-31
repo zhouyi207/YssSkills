@@ -13,9 +13,14 @@ use skill_workspace::{
 
 use crate::{
     application::{
-        AppSettings, CatalogSkillDetail, CatalogSkillSummary, CreateWorkspaceInput,
-        CreateWorkspaceKind, DashboardOverview, HarnessOverview, HarnessProbe, PropagationOutcome,
-        WorkspaceObservation, WorkspaceReconcileOutcome, WorkspaceSummary, WorkspacesOverview,
+        AddDetectedAgentsOutcome, AgentDetectionDiagnostic, AgentDetectionOutcome, AppSettings,
+        CatalogSkillDetail, CatalogSkillSummary, CopyProjectAgentSkillsInput,
+        CopyProjectAgentSkillsOutcome, CreateWorkspaceInput, CreateWorkspaceKind,
+        DashboardOverview, DeleteAgentsOutcome, DeleteProjectAgentsOutcome, DetectedAgent,
+        ExportSkillsOutcome, HarnessOverview, HarnessProbe, ImportCandidate,
+        ImportFolderDiagnostic, ImportFolderPreview, ImportSkillsOutcome, ProjectAgentOverview,
+        PropagationOutcome, SaveAgentInput, SaveAgentOutcome, WorkspaceObservation,
+        WorkspaceReconcileOutcome, WorkspaceSummary, WorkspacesOverview,
     },
     ipc::IpcError,
     persistence::StoredWorkspace,
@@ -125,6 +130,64 @@ pub struct CatalogSkillDetailDto {
     pub body: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScanImportFolderRequestDto {
+    pub root: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportCandidateDto {
+    pub path: PathDto,
+    pub name: String,
+    pub description: String,
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportFolderDiagnosticDto {
+    pub path: PathDto,
+    pub error: IpcError,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanImportFolderResponseDto {
+    pub root: PathDto,
+    pub candidates: Vec<ImportCandidateDto>,
+    pub diagnostics: Vec<ImportFolderDiagnosticDto>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImportLocalSkillsRequestDto {
+    pub root: String,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportLocalSkillsResponseDto {
+    pub imported_skill_ids: Vec<String>,
+    pub skipped_paths: Vec<PathDto>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExportCatalogSkillsRequestDto {
+    pub destination_root: String,
+    pub skill_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportCatalogSkillsResponseDto {
+    pub export_root: PathDto,
+    pub exported_skill_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SkillSourceDto {
@@ -154,6 +217,66 @@ impl From<CatalogSkillDetail> for CatalogSkillDetailDto {
         Self {
             skill: value.summary.into(),
             body: value.body,
+        }
+    }
+}
+
+impl From<ImportCandidate> for ImportCandidateDto {
+    fn from(value: ImportCandidate) -> Self {
+        Self {
+            path: PathDto::from(value.path.as_path()),
+            name: value.name,
+            description: value.description,
+            version: value.version,
+        }
+    }
+}
+
+impl From<ImportFolderDiagnostic> for ImportFolderDiagnosticDto {
+    fn from(value: ImportFolderDiagnostic) -> Self {
+        Self {
+            path: PathDto::from(value.path.as_path()),
+            error: value.error.into(),
+        }
+    }
+}
+
+impl From<ImportFolderPreview> for ScanImportFolderResponseDto {
+    fn from(value: ImportFolderPreview) -> Self {
+        Self {
+            root: PathDto::from(value.root.as_path()),
+            candidates: value.candidates.into_iter().map(Into::into).collect(),
+            diagnostics: value.diagnostics.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<ImportSkillsOutcome> for ImportLocalSkillsResponseDto {
+    fn from(value: ImportSkillsOutcome) -> Self {
+        Self {
+            imported_skill_ids: value
+                .imported
+                .into_iter()
+                .map(|skill_id| skill_id.to_string())
+                .collect(),
+            skipped_paths: value
+                .skipped
+                .into_iter()
+                .map(|path| PathDto::from(path.as_path()))
+                .collect(),
+        }
+    }
+}
+
+impl From<ExportSkillsOutcome> for ExportCatalogSkillsResponseDto {
+    fn from(value: ExportSkillsOutcome) -> Self {
+        Self {
+            export_root: PathDto::from(value.export_root.as_path()),
+            exported_skill_ids: value
+                .exported
+                .into_iter()
+                .map(|skill_id| skill_id.to_string())
+                .collect(),
         }
     }
 }
@@ -222,7 +345,8 @@ pub struct HarnessSummaryDto {
     pub category: HarnessCategoryDto,
     pub custom: bool,
     pub capabilities: HarnessCapabilitiesDto,
-    pub deployment_count: usize,
+    pub skill_count: usize,
+    pub linked_skill_ids: Vec<String>,
     pub probe: Option<HarnessProbeDto>,
     pub error: Option<IpcError>,
 }
@@ -248,6 +372,7 @@ pub struct HarnessCapabilitiesDto {
 pub struct HarnessProbeDto {
     pub detection_status: DetectionStatusDto,
     pub checked_paths: Vec<PathDto>,
+    pub agent_path: PathDto,
     pub global_skills_path: PathDto,
 }
 
@@ -271,17 +396,25 @@ impl From<WorkspacesOverview> for WorkspacesOverviewDto {
 
 impl From<HarnessOverview> for HarnessSummaryDto {
     fn from(value: HarnessOverview) -> Self {
-        let (probe, error) = match value.probe {
+        let (probe, mut error) = match value.probe {
             Ok(probe) => (Some(probe.into()), None),
             Err(error) => (None, Some(error.into())),
         };
+        if error.is_none() {
+            error = value.scan_error.map(Into::into);
+        }
         Self {
             id: value.id.to_string(),
             display_name: value.display_name,
             category: value.category.into(),
             custom: value.custom,
             capabilities: value.capabilities.into(),
-            deployment_count: value.deployment_count,
+            skill_count: value.skill_count,
+            linked_skill_ids: value
+                .linked_skill_ids
+                .into_iter()
+                .map(|skill_id| skill_id.to_string())
+                .collect(),
             probe,
             error,
         }
@@ -310,6 +443,10 @@ impl From<HarnessCapabilities> for HarnessCapabilitiesDto {
 
 impl From<HarnessProbe> for HarnessProbeDto {
     fn from(value: HarnessProbe) -> Self {
+        let agent_path = value
+            .global_skills_path
+            .parent()
+            .unwrap_or(value.global_skills_path.as_path());
         Self {
             detection_status: value.detection_status.into(),
             checked_paths: value
@@ -317,6 +454,7 @@ impl From<HarnessProbe> for HarnessProbeDto {
                 .iter()
                 .map(|path| PathDto::from(path.as_path()))
                 .collect(),
+            agent_path: PathDto::from(agent_path),
             global_skills_path: PathDto::from(value.global_skills_path.as_path()),
         }
     }
@@ -359,8 +497,7 @@ pub enum WorkspaceKindDto {
 #[serde(rename_all = "camelCase")]
 pub enum DeploymentModeDto {
     Copy,
-    SymbolicLink,
-    Junction,
+    Link,
 }
 
 impl From<WorkspaceSummary> for WorkspaceSummaryDto {
@@ -401,8 +538,7 @@ impl From<DeploymentMode> for DeploymentModeDto {
     fn from(value: DeploymentMode) -> Self {
         match value {
             DeploymentMode::Copy => Self::Copy,
-            DeploymentMode::SymbolicLink => Self::SymbolicLink,
-            DeploymentMode::Junction => Self::Junction,
+            DeploymentMode::Link => Self::Link,
         }
     }
 }
@@ -411,8 +547,7 @@ impl From<DeploymentModeDto> for DeploymentMode {
     fn from(value: DeploymentModeDto) -> Self {
         match value {
             DeploymentModeDto::Copy => Self::Copy,
-            DeploymentModeDto::SymbolicLink => Self::SymbolicLink,
-            DeploymentModeDto::Junction => Self::Junction,
+            DeploymentModeDto::Link => Self::Link,
         }
     }
 }
@@ -468,8 +603,249 @@ pub struct WorkspaceIdRequestDto {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveAgentRequestDto {
+    pub agent_id: Option<String>,
+    pub display_name: String,
+    pub agent_root: String,
+    pub skill_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveAgentResponseDto {
+    pub agent_id: String,
+    pub display_name: String,
+    pub agent_root: PathDto,
+    pub skills_root: PathDto,
+    pub linked_skill_ids: Vec<String>,
+    pub removed_skill_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedAgentDto {
+    pub detector_id: String,
+    pub display_name: String,
+    pub agent_root: PathDto,
+    pub skill_count: usize,
+    pub configured: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDetectionDiagnosticDto {
+    pub detector_id: String,
+    pub display_name: String,
+    pub error: IpcError,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectAgentsResponseDto {
+    pub agents: Vec<DetectedAgentDto>,
+    pub diagnostics: Vec<AgentDetectionDiagnosticDto>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AddDetectedAgentsRequestDto {
+    pub detector_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddDetectedAgentsResponseDto {
+    pub added_agent_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeleteAgentsRequestDto {
+    pub agent_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteAgentsResponseDto {
+    pub deleted_agent_ids: Vec<String>,
+    pub deleted_skill_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CopyProjectAgentSkillsRequestDto {
+    pub workspace_id: String,
+    pub agent_root: String,
+    pub skill_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyProjectAgentSkillsResponseDto {
+    pub skills_root: PathDto,
+    pub copied_skill_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeleteProjectAgentsRequestDto {
+    pub workspace_id: String,
+    pub agent_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteProjectAgentsResponseDto {
+    pub deleted_agent_ids: Vec<String>,
+    pub deleted_skill_count: usize,
+}
+
+impl From<SaveAgentRequestDto> for SaveAgentInput {
+    fn from(value: SaveAgentRequestDto) -> Self {
+        Self {
+            agent_id: value.agent_id,
+            display_name: value.display_name,
+            agent_root: value.agent_root.into(),
+            skill_ids: value.skill_ids,
+        }
+    }
+}
+
+impl From<SaveAgentOutcome> for SaveAgentResponseDto {
+    fn from(value: SaveAgentOutcome) -> Self {
+        Self {
+            agent_id: value.agent_id.to_string(),
+            display_name: value.display_name,
+            agent_root: PathDto::from(value.agent_root.as_path()),
+            skills_root: PathDto::from(value.skills.skills_root.as_path()),
+            linked_skill_ids: value
+                .skills
+                .linked
+                .into_iter()
+                .map(|skill_id| skill_id.to_string())
+                .collect(),
+            removed_skill_ids: value
+                .skills
+                .removed
+                .into_iter()
+                .map(|skill_id| skill_id.to_string())
+                .collect(),
+        }
+    }
+}
+
+impl From<DetectedAgent> for DetectedAgentDto {
+    fn from(value: DetectedAgent) -> Self {
+        Self {
+            detector_id: value.detector_id.to_string(),
+            display_name: value.display_name,
+            agent_root: PathDto::from(value.agent_root.as_path()),
+            skill_count: value.skill_count,
+            configured: value.configured,
+        }
+    }
+}
+
+impl From<AgentDetectionDiagnostic> for AgentDetectionDiagnosticDto {
+    fn from(value: AgentDetectionDiagnostic) -> Self {
+        let error = match value.error {
+            crate::application::AgentDetectionError::Harness(error) => error.into(),
+            crate::application::AgentDetectionError::Local(error) => error.into(),
+        };
+        Self {
+            detector_id: value.detector_id.to_string(),
+            display_name: value.display_name,
+            error,
+        }
+    }
+}
+
+impl From<AgentDetectionOutcome> for DetectAgentsResponseDto {
+    fn from(value: AgentDetectionOutcome) -> Self {
+        Self {
+            agents: value.agents.into_iter().map(Into::into).collect(),
+            diagnostics: value.diagnostics.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<AddDetectedAgentsOutcome> for AddDetectedAgentsResponseDto {
+    fn from(value: AddDetectedAgentsOutcome) -> Self {
+        Self {
+            added_agent_ids: value
+                .added_agent_ids
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
+        }
+    }
+}
+
+impl From<DeleteAgentsOutcome> for DeleteAgentsResponseDto {
+    fn from(value: DeleteAgentsOutcome) -> Self {
+        Self {
+            deleted_agent_ids: value
+                .deleted_agent_ids
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
+            deleted_skill_count: value.deleted_skill_count,
+        }
+    }
+}
+
+impl From<CopyProjectAgentSkillsRequestDto> for CopyProjectAgentSkillsInput {
+    fn from(value: CopyProjectAgentSkillsRequestDto) -> Self {
+        Self {
+            workspace_id: value.workspace_id,
+            agent_root: value.agent_root.into(),
+            skill_ids: value.skill_ids,
+        }
+    }
+}
+
+impl From<CopyProjectAgentSkillsOutcome> for CopyProjectAgentSkillsResponseDto {
+    fn from(value: CopyProjectAgentSkillsOutcome) -> Self {
+        Self {
+            skills_root: PathDto::from(value.skills_root.as_path()),
+            copied_skill_ids: value
+                .copied_skill_ids
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
+        }
+    }
+}
+
+impl From<DeleteProjectAgentsOutcome> for DeleteProjectAgentsResponseDto {
+    fn from(value: DeleteProjectAgentsOutcome) -> Self {
+        Self {
+            deleted_agent_ids: value
+                .deleted_agent_ids
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
+            deleted_skill_count: value.deleted_skill_count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SkillIdRequestDto {
     pub skill_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeleteCatalogSkillsRequestDto {
+    pub skill_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteCatalogSkillsResponseDto {
+    pub deleted_skill_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -478,6 +854,17 @@ pub struct WorkspaceObservationDto {
     pub workspace: WorkspaceSummaryDto,
     pub resolution: WorkspaceResolutionDto,
     pub report: WorkspaceReportDto,
+    pub project_agents: Vec<ProjectAgentDto>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAgentDto {
+    pub id: String,
+    pub display_name: String,
+    pub path: PathDto,
+    pub skill_count: usize,
+    pub error: Option<IpcError>,
 }
 
 #[derive(Debug, Serialize)]
@@ -606,6 +993,19 @@ impl From<WorkspaceObservation> for WorkspaceObservationDto {
             workspace: value.workspace.into(),
             resolution: value.resolution.into(),
             report: value.report.into(),
+            project_agents: value.project_agents.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<ProjectAgentOverview> for ProjectAgentDto {
+    fn from(value: ProjectAgentOverview) -> Self {
+        Self {
+            id: value.id.to_string(),
+            display_name: value.display_name,
+            path: PathDto::from(value.path.as_path()),
+            skill_count: value.skill_count,
+            error: value.error.map(Into::into),
         }
     }
 }
@@ -991,6 +1391,17 @@ mod tests {
             request.kind,
             CreateWorkspaceKindDto::Project { .. }
         ));
+    }
+
+    #[test]
+    fn deployment_mode_contract_accepts_link() {
+        let link: CreateWorkspaceRequestDto = serde_json::from_value(serde_json::json!({
+            "name": "Linked project",
+            "kind": { "kind": "project", "root": "C:/project" },
+            "deploymentMode": "link"
+        }))
+        .unwrap();
+        assert_eq!(link.deployment_mode, DeploymentModeDto::Link);
     }
 
     #[test]

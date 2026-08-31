@@ -7,7 +7,8 @@ use skill_registry::{RegistryError, RetryAfter};
 use skill_workspace::{CatalogFailure, WorkspaceError};
 
 use crate::{
-    application::ApplicationError, persistence::PersistenceError, state::ApplicationWorkerError,
+    agent_config::AgentConfigError, application::ApplicationError, persistence::PersistenceError,
+    state::ApplicationWorkerError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +95,9 @@ impl From<ApplicationError> for IpcError {
             ApplicationError::Persistence(error) => error.into(),
             ApplicationError::Workspace(error) => error.into(),
             ApplicationError::Harness(error) => error.into(),
+            ApplicationError::Local(error) => error.into(),
+            ApplicationError::Catalog(error) => error.into(),
+            ApplicationError::AgentConfig(error) => error.into(),
             ApplicationError::InvalidRequest { field, reason } => {
                 Self::new("request.invalid", "One or more request fields are invalid.")
                     .with_context("field", field)
@@ -115,6 +119,27 @@ impl From<ApplicationError> for IpcError {
     }
 }
 
+impl From<AgentConfigError> for IpcError {
+    fn from(error: AgentConfigError) -> Self {
+        match error {
+            AgentConfigError::Io { operation, .. } => Self::new(
+                "agent.configuration_filesystem_failed",
+                "The Agent configuration could not be saved.",
+            )
+            .with_context("operation", operation)
+            .retryable(),
+            AgentConfigError::Decode(_) | AgentConfigError::InvalidData { .. } => Self::new(
+                "agent.configuration_invalid",
+                "The Agent configuration file is invalid.",
+            ),
+            AgentConfigError::Encode(_) => Self::new(
+                "agent.configuration_encode_failed",
+                "The Agent configuration could not be encoded.",
+            ),
+        }
+    }
+}
+
 impl From<PersistenceError> for IpcError {
     fn from(error: PersistenceError) -> Self {
         match error {
@@ -131,12 +156,6 @@ impl From<PersistenceError> for IpcError {
             .with_context("operation", operation)
             .retryable(),
             PersistenceError::Local { source, .. } => (*source).into(),
-            PersistenceError::UnsupportedSchema { found, supported } => Self::new(
-                "persistence.schema_too_new",
-                "The local database was created by a newer application version.",
-            )
-            .with_context("found", found)
-            .with_context("supported", supported),
             PersistenceError::InvalidData { entity, field } => Self::new(
                 "persistence.invalid_data",
                 "The local database contains invalid data.",
@@ -290,6 +309,10 @@ impl From<LocalError> for IpcError {
             LocalError::DestinationExists { .. } => Self::new(
                 "local.destination_exists",
                 "The destination already exists.",
+            ),
+            LocalError::NotLink { .. } => Self::new(
+                "local.not_link",
+                "The requested path is not a symbolic link or junction.",
             ),
             LocalError::PathConflict { .. } => Self::new(
                 "local.path_conflict",

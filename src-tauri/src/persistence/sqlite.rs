@@ -1,5 +1,5 @@
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     fs, io,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -10,19 +10,21 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 #[cfg(windows)]
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use skill_core::{InstalledSkill, SkillId, SkillSource};
 use skill_harness::HarnessId;
-use skill_local::{copy_skill, read_skill, ExistingDestination, LocalError, ScannedSkill};
+use skill_local::{
+    copy_skill, read_skill, scan_directory, ExistingDestination, LocalError, ScanMode, ScannedSkill,
+};
 use skill_workspace::{
     CatalogFailure, CentralCatalogPort, CentralMatch, CentralSkillSnapshot, DeploymentBinding,
     DeploymentKey, DeploymentMode, SkillVersion, Workspace, WorkspaceId, WorkspaceKind,
 };
 use thiserror::Error;
 
-pub const CATALOG_SCHEMA_VERSION: i64 = 1;
 const CATALOG_ROOT_KEY: &str = "catalog_root";
-const PENDING_DIRECTORY_NAME: &str = ".yssskills-pending";
+const CACHE_DIRECTORY_NAME: &str = "cache";
+const SKILLS_DIRECTORY_NAME: &str = "skills";
 
 #[derive(Debug, Clone)]
 pub struct StoredWorkspace {
@@ -64,8 +66,6 @@ pub enum PersistenceError {
         #[source]
         source: Box<LocalError>,
     },
-    #[error("catalog schema version {found} is newer than supported version {supported}")]
-    UnsupportedSchema { found: i64, supported: i64 },
     #[error("persisted {entity} field {field} is invalid")]
     InvalidData {
         entity: &'static str,
@@ -121,12 +121,12 @@ impl PersistenceError {
     }
 }
 
-pub struct SqliteCatalog {
+pub struct PersistentCatalog {
     connection: Connection,
     catalog_root: PathBuf,
 }
 
-impl SqliteCatalog {
+impl PersistentCatalog {
     pub fn open(
         database_path: impl AsRef<Path>,
         default_catalog_root: impl AsRef<Path>,
@@ -152,7 +152,7 @@ impl SqliteCatalog {
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(|source| PersistenceError::database("enable_wal", source))?;
 
-        migrate(&mut connection)?;
+        initialize_schema(&mut connection)?;
 
         let persisted_root = connection
             .query_row(
@@ -186,11 +186,11 @@ impl SqliteCatalog {
         fs::create_dir_all(&catalog_root)
             .map_err(|source| PersistenceError::io("create_catalog_root", &catalog_root, source))?;
 
+        ensure_catalog_directories(&catalog_root)?;
         let mut catalog = Self {
             connection,
             catalog_root,
         };
-        catalog.recover_pending_imports()?;
         catalog.ensure_agents_workspace()?;
         Ok(catalog)
     }
@@ -210,15 +210,11 @@ impl SqliteCatalog {
             });
         }
 
-        let skill_count: i64 = self
-            .connection
-            .query_row("SELECT COUNT(*) FROM catalog_skills", [], |row| row.get(0))
-            .map_err(|source| PersistenceError::database("count_catalog_skills", source))?;
-        if skill_count != 0 {
+        if !directory_is_empty(&self.catalog_root.join(SKILLS_DIRECTORY_NAME))? {
             return Err(PersistenceError::CatalogNotEmpty);
         }
 
-        ensure_pending_directory(&root)?;
+        ensure_catalog_directories(&root)?;
         self.connection
             .execute(
                 "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
@@ -231,11 +227,37 @@ impl SqliteCatalog {
     }
 
     pub fn ensure_agents_workspace(&mut self) -> Result<StoredWorkspace, PersistenceError> {
-        if let Some(workspace) = self
+        if let Some(mut workspace) = self
             .list_workspaces()?
             .into_iter()
             .find(|stored| matches!(stored.workspace.kind, WorkspaceKind::Agents))
         {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|source| {
+                    PersistenceError::database("begin_enforce_agents_link_mode", source)
+                })?;
+            transaction
+                .execute(
+                    "UPDATE workspaces SET deployment_mode = 'link' WHERE workspace_id = ?1",
+                    [workspace.workspace.id.to_string()],
+                )
+                .map_err(|source| PersistenceError::database("update_agents_link_mode", source))?;
+            transaction
+                .execute(
+                    "UPDATE deployment_bindings
+                     SET deployment_mode = 'link'
+                     WHERE workspace_id = ?1",
+                    [workspace.workspace.id.to_string()],
+                )
+                .map_err(|source| {
+                    PersistenceError::database("update_agents_binding_link_modes", source)
+                })?;
+            transaction.commit().map_err(|source| {
+                PersistenceError::database("commit_enforce_agents_link_mode", source)
+            })?;
+            workspace.deployment_mode = DeploymentMode::Link;
             return Ok(workspace);
         }
 
@@ -245,7 +267,7 @@ impl SqliteCatalog {
                 id: WorkspaceId::new(),
                 kind: WorkspaceKind::Agents,
             },
-            deployment_mode: DeploymentMode::Copy,
+            deployment_mode: DeploymentMode::Link,
         };
         self.insert_workspace(&stored)?;
         Ok(stored)
@@ -325,11 +347,37 @@ impl SqliteCatalog {
     }
 
     pub fn list_catalog_skills(&self) -> Result<Vec<CentralSkillSnapshot>, PersistenceError> {
-        let rows = self.catalog_rows("active")?;
-        let mut snapshots = Vec::with_capacity(rows.len());
-        for row in rows {
-            snapshots.push(self.snapshot_from_row(row)?);
+        let skills_root = self.catalog_root.join(SKILLS_DIRECTORY_NAME);
+        let report = scan_directory(&skills_root, ScanMode::Flat)
+            .map_err(|source| PersistenceError::local("scan_catalog_skills", source))?;
+        if let Some(diagnostic) = report.diagnostics.into_iter().next() {
+            return Err(PersistenceError::local(
+                "read_catalog_skill",
+                diagnostic.error,
+            ));
         }
+        let mut snapshots = report
+            .skills
+            .into_iter()
+            .map(|scanned| {
+                let directory_name =
+                    scanned
+                        .path
+                        .file_name()
+                        .ok_or(PersistenceError::InvalidData {
+                            entity: "filesystem_catalog",
+                            field: "directory_name",
+                        })?;
+                let skill_id = SkillId::from_directory_name(directory_name);
+                Ok(snapshot_from_scanned(
+                    skill_id,
+                    SkillSource::Local {
+                        path: scanned.path.clone(),
+                    },
+                    scanned,
+                ))
+            })
+            .collect::<Result<Vec<_>, PersistenceError>>()?;
         snapshots.sort_by(|left, right| {
             left.installed
                 .metadata
@@ -350,20 +398,16 @@ impl SqliteCatalog {
         &self,
         skill_id: SkillId,
     ) -> Result<(CentralSkillSnapshot, ScannedSkill), PersistenceError> {
-        let row = self
-            .catalog_rows("active")?
+        let snapshot = self
+            .list_catalog_skills()?
             .into_iter()
-            .find(|row| row.skill_id == skill_id.to_string())
+            .find(|snapshot| snapshot.installed.id == skill_id)
             .ok_or_else(|| PersistenceError::NotFound {
                 entity: "skill",
                 id: skill_id.to_string(),
             })?;
-        let source = row.skill_source()?;
-        let location = row.location()?;
-        validate_catalog_location(&self.catalog_root, skill_id, &location)?;
-        let scanned = read_skill(&location)
+        let scanned = read_skill(&snapshot.installed.location)
             .map_err(|source| PersistenceError::local("read_catalog_skill", source))?;
-        let snapshot = snapshot_from_scanned(skill_id, source, scanned.clone());
         Ok((snapshot, scanned))
     }
 
@@ -395,6 +439,33 @@ impl SqliteCatalog {
             bindings.push(row.into_binding()?);
         }
         Ok(bindings)
+    }
+
+    pub fn delete_bindings_for_skill(&mut self, skill_id: SkillId) -> Result<(), PersistenceError> {
+        self.connection
+            .execute(
+                "DELETE FROM deployment_bindings WHERE skill_id = ?1",
+                [skill_id.to_string()],
+            )
+            .map_err(|source| PersistenceError::database("delete_skill_bindings", source))?;
+        Ok(())
+    }
+
+    pub fn delete_bindings_for_harness_workspace(
+        &mut self,
+        harness_id: &HarnessId,
+        workspace_id: WorkspaceId,
+    ) -> Result<(), PersistenceError> {
+        self.connection
+            .execute(
+                "DELETE FROM deployment_bindings
+                 WHERE harness_id = ?1 AND workspace_id = ?2",
+                params![harness_id.as_str(), workspace_id.to_string()],
+            )
+            .map_err(|source| {
+                PersistenceError::database("delete_harness_workspace_bindings", source)
+            })?;
+        Ok(())
     }
 
     pub fn activity_since(
@@ -438,79 +509,8 @@ impl SqliteCatalog {
         Ok(activity)
     }
 
-    fn recover_pending_imports(&mut self) -> Result<(), PersistenceError> {
-        ensure_pending_directory(&self.catalog_root)?;
-
-        let pending_rows = self.catalog_rows("pending")?;
-        for row in &pending_rows {
-            let skill_id =
-                SkillId::parse(&row.skill_id).map_err(|_| PersistenceError::InvalidData {
-                    entity: "catalog_skills",
-                    field: "skill_id",
-                })?;
-            let location = row.location()?;
-            validate_catalog_location(&self.catalog_root, skill_id, &location)?;
-        }
-        self.connection
-            .execute("DELETE FROM catalog_skills WHERE state = 'pending'", [])
-            .map_err(|source| PersistenceError::database("delete_pending_catalog_rows", source))?;
-        Ok(())
-    }
-
-    fn catalog_rows(&self, state: &str) -> Result<Vec<CatalogRow>, PersistenceError> {
-        let mut statement = self
-            .connection
-            .prepare(
-                "SELECT skill_id, location, source_kind, source_path, registry_name,
-                        registry_skill, registry_version, git_url, git_revision, git_subdirectory
-                 FROM catalog_skills
-                 WHERE state = ?1
-                 ORDER BY skill_id",
-            )
-            .map_err(|source| PersistenceError::database("prepare_catalog_rows", source))?;
-        let rows = statement
-            .query_map([state], |row| {
-                Ok(CatalogRow {
-                    skill_id: row.get(0)?,
-                    location: row.get(1)?,
-                    source_kind: row.get(2)?,
-                    source_path: row.get(3)?,
-                    registry_name: row.get(4)?,
-                    registry_skill: row.get(5)?,
-                    registry_version: row.get(6)?,
-                    git_url: row.get(7)?,
-                    git_revision: row.get(8)?,
-                    git_subdirectory: row.get(9)?,
-                })
-            })
-            .map_err(|source| PersistenceError::database("query_catalog_rows", source))?;
-
-        let mut decoded = Vec::new();
-        for row in rows {
-            decoded.push(
-                row.map_err(|source| PersistenceError::database("decode_catalog_row", source))?,
-            );
-        }
-        Ok(decoded)
-    }
-
-    fn snapshot_from_row(&self, row: CatalogRow) -> Result<CentralSkillSnapshot, PersistenceError> {
-        let skill_id =
-            SkillId::parse(&row.skill_id).map_err(|_| PersistenceError::InvalidData {
-                entity: "catalog_skills",
-                field: "skill_id",
-            })?;
-        let source = row.skill_source()?;
-        let location = row.location()?;
-        validate_catalog_location(&self.catalog_root, skill_id, &location)?;
-        let scanned = read_skill(&location)
-            .map_err(|source| PersistenceError::local("read_catalog_skill", source))?;
-        Ok(snapshot_from_scanned(skill_id, source, scanned))
-    }
-
     fn cleanup_failed_import(
-        &mut self,
-        skill_id: SkillId,
+        &self,
         pending_path: &Path,
         pending_owned: bool,
         final_path: &Path,
@@ -524,12 +524,6 @@ impl SqliteCatalog {
             if final_owned {
                 remove_path_if_exists(final_path, "cleanup_final_import")?;
             }
-            self.connection
-                .execute(
-                    "DELETE FROM catalog_skills WHERE skill_id = ?1 AND state = 'pending'",
-                    [skill_id.to_string()],
-                )
-                .map_err(|source| PersistenceError::database("cleanup_pending_row", source))?;
             Ok::<(), PersistenceError>(())
         })();
 
@@ -544,7 +538,7 @@ impl SqliteCatalog {
     }
 }
 
-impl CentralCatalogPort for SqliteCatalog {
+impl CentralCatalogPort for PersistentCatalog {
     fn list(&self) -> Result<Vec<CentralSkillSnapshot>, CatalogFailure> {
         self.list_catalog_skills()
             .map_err(PersistenceError::into_catalog_failure)
@@ -605,36 +599,27 @@ impl CentralCatalogPort for SqliteCatalog {
         &mut self,
         scanned: &ScannedSkill,
     ) -> Result<CentralSkillSnapshot, CatalogFailure> {
-        let skill_id = SkillId::new();
-        let directory_name = skill_id.to_string();
+        let directory_name = scanned.path.file_name().ok_or_else(|| {
+            CatalogFailure::invalid_data("local skill path has no directory name")
+        })?;
+        let skill_id = SkillId::from_directory_name(directory_name);
         let pending_path = self
             .catalog_root
-            .join(PENDING_DIRECTORY_NAME)
-            .join(&directory_name);
-        let final_path = self.catalog_root.join(&directory_name);
+            .join(CACHE_DIRECTORY_NAME)
+            .join(directory_name);
+        let final_path = self
+            .catalog_root
+            .join(SKILLS_DIRECTORY_NAME)
+            .join(directory_name);
         if pending_path.exists() || final_path.exists() {
-            return Err(CatalogFailure::conflict(format!("skill:{skill_id}")));
+            return Err(CatalogFailure::conflict(format!(
+                "catalog path:{}",
+                final_path.display()
+            )));
         }
-
-        self.connection
-            .execute(
-                "INSERT INTO catalog_skills (
-                     skill_id, state, location, source_kind, source_path
-                 ) VALUES (?1, 'pending', ?2, 'local', ?3)",
-                params![
-                    skill_id.to_string(),
-                    encode_path(&final_path),
-                    encode_path(&scanned.path),
-                ],
-            )
-            .map_err(|source| {
-                PersistenceError::database("insert_pending_catalog_skill", source)
-                    .into_catalog_failure()
-            })?;
 
         if let Err(source) = copy_skill(&scanned.path, &pending_path, ExistingDestination::Reject) {
             let error = self.cleanup_failed_import(
-                skill_id,
                 &pending_path,
                 false,
                 &final_path,
@@ -645,7 +630,6 @@ impl CentralCatalogPort for SqliteCatalog {
         }
         if let Err(source) = fs::rename(&pending_path, &final_path) {
             let error = self.cleanup_failed_import(
-                skill_id,
                 &pending_path,
                 true,
                 &final_path,
@@ -659,7 +643,6 @@ impl CentralCatalogPort for SqliteCatalog {
             Ok(imported) => imported,
             Err(source) => {
                 let error = self.cleanup_failed_import(
-                    skill_id,
                     &pending_path,
                     false,
                     &final_path,
@@ -669,66 +652,26 @@ impl CentralCatalogPort for SqliteCatalog {
                 return Err(error.into_catalog_failure());
             }
         };
-        let occurred_at = match unix_timestamp() {
-            Ok(occurred_at) => occurred_at,
-            Err(operation) => {
-                let error = self.cleanup_failed_import(
-                    skill_id,
-                    &pending_path,
-                    false,
-                    &final_path,
-                    true,
-                    operation,
-                );
-                return Err(error.into_catalog_failure());
-            }
-        };
-        let activation = (|| {
-            let transaction = self
+        if let Ok(occurred_at) = unix_timestamp() {
+            if self
                 .connection
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(|source| PersistenceError::database("begin_activate_import", source))?;
-            let changed = transaction
-                .execute(
-                    "UPDATE catalog_skills SET state = 'active'
-                     WHERE skill_id = ?1 AND state = 'pending'",
-                    [skill_id.to_string()],
-                )
-                .map_err(|source| PersistenceError::database("activate_import", source))?;
-            if changed != 1 {
-                return Err(PersistenceError::InvalidData {
-                    entity: "catalog_skills",
-                    field: "state",
-                });
-            }
-            transaction
                 .execute(
                     "INSERT INTO catalog_activity (skill_id, kind, occurred_at)
                      VALUES (?1, 'imported', ?2)",
                     params![skill_id.to_string(), occurred_at],
                 )
-                .map_err(|source| PersistenceError::database("record_import_activity", source))?;
-            transaction
-                .commit()
-                .map_err(|source| PersistenceError::database("commit_activate_import", source))?;
-            Ok::<(), PersistenceError>(())
-        })();
-        if let Err(operation) = activation {
-            let error = self.cleanup_failed_import(
-                skill_id,
-                &pending_path,
-                false,
-                &final_path,
-                true,
-                operation,
-            );
-            return Err(error.into_catalog_failure());
+                .is_err()
+            {
+                eprintln!(
+                    "failed to record catalog import activity after the import was committed"
+                );
+            }
         }
 
         Ok(snapshot_from_scanned(
             skill_id,
             SkillSource::Local {
-                path: scanned.path.clone(),
+                path: imported.path.clone(),
             },
             imported,
         ))
@@ -771,22 +714,8 @@ impl CentralCatalogPort for SqliteCatalog {
     }
 
     fn associate(&mut self, binding: DeploymentBinding) -> Result<(), CatalogFailure> {
-        let active_skill_count: i64 = self
-            .connection
-            .query_row(
-                "SELECT COUNT(*) FROM catalog_skills WHERE skill_id = ?1 AND state = 'active'",
-                [binding.key.skill_id.to_string()],
-                |row| row.get(0),
-            )
-            .map_err(|source| {
-                PersistenceError::database("verify_binding_skill", source).into_catalog_failure()
-            })?;
-        if active_skill_count != 1 {
-            return Err(CatalogFailure::not_found(format!(
-                "skill:{}",
-                binding.key.skill_id
-            )));
-        }
+        self.catalog_skill(binding.key.skill_id)
+            .map_err(PersistenceError::into_catalog_failure)?;
         self.workspace(binding.key.workspace_id)
             .map_err(PersistenceError::into_catalog_failure)?;
 
@@ -862,64 +791,6 @@ impl CentralCatalogPort for SqliteCatalog {
                 PersistenceError::database("insert_binding", source).into_catalog_failure()
             })?;
         Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct CatalogRow {
-    skill_id: String,
-    location: Vec<u8>,
-    source_kind: String,
-    source_path: Option<Vec<u8>>,
-    registry_name: Option<String>,
-    registry_skill: Option<String>,
-    registry_version: Option<String>,
-    git_url: Option<String>,
-    git_revision: Option<String>,
-    git_subdirectory: Option<Vec<u8>>,
-}
-
-impl CatalogRow {
-    fn location(&self) -> Result<PathBuf, PersistenceError> {
-        decode_path(&self.location, "catalog_skills", "location")
-    }
-
-    fn skill_source(&self) -> Result<SkillSource, PersistenceError> {
-        match self.source_kind.as_str() {
-            "local" => Ok(SkillSource::Local {
-                path: decode_required_path(
-                    self.source_path.as_deref(),
-                    "catalog_skills",
-                    "source_path",
-                )?,
-            }),
-            "registry" => Ok(SkillSource::Registry {
-                registry: required_string(
-                    self.registry_name.as_deref(),
-                    "catalog_skills",
-                    "registry_name",
-                )?,
-                skill: required_string(
-                    self.registry_skill.as_deref(),
-                    "catalog_skills",
-                    "registry_skill",
-                )?,
-                version: self.registry_version.clone(),
-            }),
-            "git" => Ok(SkillSource::Git {
-                url: required_string(self.git_url.as_deref(), "catalog_skills", "git_url")?,
-                revision: self.git_revision.clone(),
-                subdirectory: self
-                    .git_subdirectory
-                    .as_deref()
-                    .map(|value| decode_path(value, "catalog_skills", "git_subdirectory"))
-                    .transpose()?,
-            }),
-            _ => Err(PersistenceError::InvalidData {
-                entity: "catalog_skills",
-                field: "source_kind",
-            }),
-        }
     }
 }
 
@@ -1014,23 +885,30 @@ impl BindingRow {
     }
 }
 
-fn migrate(connection: &mut Connection) -> Result<(), PersistenceError> {
-    let version: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(|source| PersistenceError::database("read_schema_version", source))?;
-    if version > CATALOG_SCHEMA_VERSION {
-        return Err(PersistenceError::UnsupportedSchema {
-            found: version,
-            supported: CATALOG_SCHEMA_VERSION,
-        });
-    }
-    if version == CATALOG_SCHEMA_VERSION {
-        return Ok(());
-    }
-
+fn initialize_schema(connection: &mut Connection) -> Result<(), PersistenceError> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|source| PersistenceError::database("begin_migration", source))?;
+        .map_err(|source| PersistenceError::database("begin_schema_initialization", source))?;
+    if !table_exists(&transaction, "app_settings")? {
+        create_schema(&transaction)?;
+    }
+    transaction
+        .commit()
+        .map_err(|source| PersistenceError::database("commit_schema_initialization", source))?;
+    Ok(())
+}
+
+fn table_exists(transaction: &Transaction<'_>, table: &str) -> Result<bool, PersistenceError> {
+    transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [table],
+            |row| row.get(0),
+        )
+        .map_err(|source| PersistenceError::database("inspect_schema", source))
+}
+
+fn create_schema(transaction: &Transaction<'_>) -> Result<(), PersistenceError> {
     transaction
         .execute_batch(
             r#"
@@ -1038,45 +916,6 @@ fn migrate(connection: &mut Connection) -> Result<(), PersistenceError> {
                  key TEXT PRIMARY KEY NOT NULL,
                  value BLOB NOT NULL
              );
-             CREATE TABLE catalog_skills (
-                 skill_id TEXT PRIMARY KEY NOT NULL,
-                 state TEXT NOT NULL CHECK (state IN ('pending', 'active')),
-                 location BLOB NOT NULL UNIQUE,
-                 source_kind TEXT NOT NULL CHECK (source_kind IN ('local', 'registry', 'git')),
-                 source_path BLOB,
-                 registry_name TEXT,
-                 registry_skill TEXT,
-                 registry_version TEXT,
-                 git_url TEXT,
-                 git_revision TEXT,
-                 git_subdirectory BLOB
-             );
-             CREATE TABLE workspaces (
-                 workspace_id TEXT PRIMARY KEY NOT NULL,
-                 display_name TEXT NOT NULL,
-                 kind TEXT NOT NULL CHECK (kind IN ('agents', 'project', 'linked')),
-                 root_path BLOB,
-                 disabled_root_path BLOB,
-                 deployment_mode TEXT NOT NULL
-                     CHECK (deployment_mode IN ('copy', 'symbolic_link', 'junction'))
-             );
-             CREATE UNIQUE INDEX one_agents_workspace
-                 ON workspaces(kind) WHERE kind = 'agents';
-             CREATE TABLE deployment_bindings (
-                 skill_id TEXT NOT NULL,
-                 harness_id TEXT NOT NULL,
-                 workspace_id TEXT NOT NULL,
-                 target_path BLOB NOT NULL,
-                 deployment_mode TEXT NOT NULL
-                     CHECK (deployment_mode IN ('copy', 'symbolic_link', 'junction')),
-                 PRIMARY KEY (skill_id, harness_id, workspace_id),
-                 FOREIGN KEY (skill_id) REFERENCES catalog_skills(skill_id) ON DELETE CASCADE,
-                 FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE
-             );
-             CREATE INDEX deployment_bindings_workspace
-                 ON deployment_bindings(workspace_id);
-             CREATE INDEX deployment_bindings_target
-                 ON deployment_bindings(target_path);
              CREATE TABLE catalog_activity (
                  activity_id INTEGER PRIMARY KEY AUTOINCREMENT,
                  skill_id TEXT NOT NULL,
@@ -1087,12 +926,51 @@ fn migrate(connection: &mut Connection) -> Result<(), PersistenceError> {
              "#,
         )
         .map_err(|source| PersistenceError::database("create_schema", source))?;
+    create_deployment_tables(transaction)?;
+    create_deployment_indexes(transaction)?;
+    Ok(())
+}
+
+fn create_deployment_tables(transaction: &Transaction<'_>) -> Result<(), PersistenceError> {
     transaction
-        .pragma_update(None, "user_version", CATALOG_SCHEMA_VERSION)
-        .map_err(|source| PersistenceError::database("write_schema_version", source))?;
+        .execute_batch(
+            r#"
+             CREATE TABLE workspaces (
+                 workspace_id TEXT PRIMARY KEY NOT NULL,
+                 display_name TEXT NOT NULL,
+                 kind TEXT NOT NULL CHECK (kind IN ('agents', 'project', 'linked')),
+                 root_path BLOB,
+                 disabled_root_path BLOB,
+                 deployment_mode TEXT NOT NULL CHECK (deployment_mode IN ('copy', 'link'))
+             );
+             CREATE TABLE deployment_bindings (
+                 skill_id TEXT NOT NULL,
+                 harness_id TEXT NOT NULL,
+                 workspace_id TEXT NOT NULL,
+                 target_path BLOB NOT NULL,
+                 deployment_mode TEXT NOT NULL CHECK (deployment_mode IN ('copy', 'link')),
+                 PRIMARY KEY (skill_id, harness_id, workspace_id),
+                 FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE
+             );
+             "#,
+        )
+        .map_err(|source| PersistenceError::database("create_deployment_tables", source))?;
+    Ok(())
+}
+
+fn create_deployment_indexes(transaction: &Transaction<'_>) -> Result<(), PersistenceError> {
     transaction
-        .commit()
-        .map_err(|source| PersistenceError::database("commit_migration", source))?;
+        .execute_batch(
+            r#"
+             CREATE UNIQUE INDEX one_agents_workspace
+                 ON workspaces(kind) WHERE kind = 'agents';
+             CREATE INDEX deployment_bindings_workspace
+                 ON deployment_bindings(workspace_id);
+             CREATE INDEX deployment_bindings_target
+                 ON deployment_bindings(target_path);
+             "#,
+        )
+        .map_err(|source| PersistenceError::database("create_deployment_indexes", source))?;
     Ok(())
 }
 
@@ -1114,16 +992,14 @@ fn encode_workspace_kind(kind: &WorkspaceKind) -> (&'static str, Option<Vec<u8>>
 fn encode_deployment_mode(mode: DeploymentMode) -> &'static str {
     match mode {
         DeploymentMode::Copy => "copy",
-        DeploymentMode::SymbolicLink => "symbolic_link",
-        DeploymentMode::Junction => "junction",
+        DeploymentMode::Link => "link",
     }
 }
 
 fn decode_deployment_mode(value: &str) -> Result<DeploymentMode, PersistenceError> {
     match value {
         "copy" => Ok(DeploymentMode::Copy),
-        "symbolic_link" => Ok(DeploymentMode::SymbolicLink),
-        "junction" => Ok(DeploymentMode::Junction),
+        "link" => Ok(DeploymentMode::Link),
         _ => Err(PersistenceError::InvalidData {
             entity: "persisted deployment",
             field: "deployment_mode",
@@ -1151,34 +1027,6 @@ fn snapshot_from_scanned(
     }
 }
 
-fn validate_catalog_location(
-    catalog_root: &Path,
-    skill_id: SkillId,
-    location: &Path,
-) -> Result<(), PersistenceError> {
-    let expected_name = skill_id.to_string();
-    if location.parent() != Some(catalog_root)
-        || location.file_name() != Some(OsStr::new(&expected_name))
-    {
-        return Err(PersistenceError::InvalidData {
-            entity: "catalog_skills",
-            field: "location",
-        });
-    }
-    Ok(())
-}
-
-fn required_string(
-    value: Option<&str>,
-    entity: &'static str,
-    field: &'static str,
-) -> Result<String, PersistenceError> {
-    value
-        .filter(|value| !value.trim().is_empty())
-        .map(ToOwned::to_owned)
-        .ok_or(PersistenceError::InvalidData { entity, field })
-}
-
 fn decode_required_path(
     value: Option<&[u8]>,
     entity: &'static str,
@@ -1204,10 +1052,23 @@ fn validate_absolute_path(
     Ok(())
 }
 
-fn ensure_pending_directory(catalog_root: &Path) -> Result<(), PersistenceError> {
-    let pending = catalog_root.join(PENDING_DIRECTORY_NAME);
-    fs::create_dir_all(&pending)
-        .map_err(|source| PersistenceError::io("create_pending_directory", pending, source))
+fn ensure_catalog_directories(catalog_root: &Path) -> Result<(), PersistenceError> {
+    let cache = catalog_root.join(CACHE_DIRECTORY_NAME);
+    fs::create_dir_all(&cache)
+        .map_err(|source| PersistenceError::io("create_cache_directory", &cache, source))?;
+    let skills = catalog_root.join(SKILLS_DIRECTORY_NAME);
+    fs::create_dir_all(&skills)
+        .map_err(|source| PersistenceError::io("create_skills_directory", skills, source))
+}
+
+fn directory_is_empty(path: &Path) -> Result<bool, PersistenceError> {
+    let mut entries = fs::read_dir(path)
+        .map_err(|source| PersistenceError::io("read_catalog_directory", path, source))?;
+    match entries.next() {
+        Some(Ok(_)) => Ok(false),
+        Some(Err(source)) => Err(PersistenceError::io("read_catalog_entry", path, source)),
+        None => Ok(true),
+    }
 }
 
 fn remove_path_if_exists(path: &Path, operation: &'static str) -> Result<(), PersistenceError> {
@@ -1318,7 +1179,7 @@ mod tests {
     }
 
     #[test]
-    fn migrations_and_workspaces_survive_reopen() {
+    fn schema_and_workspaces_survive_reopen_without_version_metadata() {
         let root = tempdir().unwrap();
         let database = root.path().join("state.sqlite3");
         let catalog_root = root.path().join("catalog");
@@ -1336,23 +1197,47 @@ mod tests {
             deployment_mode: DeploymentMode::Copy,
         };
         {
-            let mut catalog = SqliteCatalog::open(&database, &catalog_root).unwrap();
-            assert_eq!(
-                catalog
-                    .connection
-                    .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-                    .unwrap(),
-                CATALOG_SCHEMA_VERSION
-            );
+            let mut catalog = PersistentCatalog::open(&database, &catalog_root).unwrap();
             catalog.insert_workspace(&project).unwrap();
             assert_eq!(catalog.list_workspaces().unwrap().len(), 2);
         }
 
-        let catalog = SqliteCatalog::open(&database, root.path().join("ignored")).unwrap();
+        let catalog = PersistentCatalog::open(&database, root.path().join("ignored")).unwrap();
         let restored = catalog.workspace(project.workspace.id).unwrap();
         assert_eq!(restored.name, project.name);
         assert_eq!(restored.workspace.kind, project.workspace.kind);
         assert_eq!(catalog.catalog_root(), catalog_root);
+    }
+
+    #[test]
+    fn catalog_skills_are_discovered_from_the_filesystem_without_a_database_table() {
+        let root = tempdir().unwrap();
+        let database = root.path().join("state.sqlite3");
+        let catalog_root = root.path().join("catalog");
+        let skill_path = catalog_root.join("skills/filesystem-skill");
+        let catalog = PersistentCatalog::open(&database, &catalog_root).unwrap();
+        write_skill(&skill_path, "filesystem-skill", "filesystem body");
+
+        let skills = catalog.list_catalog_skills().unwrap();
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(
+            skills[0].installed.id,
+            SkillId::from_directory_name(std::ffi::OsStr::new("filesystem-skill"))
+        );
+        assert_eq!(skills[0].installed.location, skill_path);
+        let has_catalog_table: bool = catalog
+            .connection
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM sqlite_master
+                     WHERE type = 'table' AND name = 'catalog_skills'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!has_catalog_table);
     }
 
     #[test]
@@ -1366,7 +1251,7 @@ mod tests {
         let scanned = read_skill(&source).unwrap();
 
         let (skill_id, agents_id) = {
-            let mut catalog = SqliteCatalog::open(&database, &catalog_root).unwrap();
+            let mut catalog = PersistentCatalog::open(&database, &catalog_root).unwrap();
             let agents = catalog.ensure_agents_workspace().unwrap();
             let imported = catalog.import_local(&scanned).unwrap();
             let skill_id = imported.installed.id;
@@ -1384,14 +1269,18 @@ mod tests {
             (skill_id, agents.workspace.id)
         };
 
-        let catalog = SqliteCatalog::open(&database, &catalog_root).unwrap();
+        let catalog = PersistentCatalog::open(&database, &catalog_root).unwrap();
         let skills = catalog.list_catalog_skills().unwrap();
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].installed.id, skill_id);
         assert_eq!(
+            skills[0].installed.location,
+            catalog_root.join("skills/source-skill")
+        );
+        assert_eq!(
             skills[0].installed.source,
             SkillSource::Local {
-                path: source.clone()
+                path: catalog_root.join("skills/source-skill")
             }
         );
         assert!(source.exists());
@@ -1399,6 +1288,27 @@ mod tests {
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].target_path, target);
         assert_eq!(catalog.activity_since(0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn import_rejects_a_different_skill_with_the_same_directory_name() {
+        let root = tempdir().unwrap();
+        let database = root.path().join("state.sqlite3");
+        let catalog_root = root.path().join("catalog");
+        let first = root.path().join("first/shared-name");
+        let second = root.path().join("second/shared-name");
+        write_skill(&first, "first", "first body");
+        write_skill(&second, "second", "second body");
+        let mut catalog = PersistentCatalog::open(&database, &catalog_root).unwrap();
+
+        catalog.import_local(&read_skill(&first).unwrap()).unwrap();
+        let error = catalog
+            .import_local(&read_skill(&second).unwrap())
+            .unwrap_err();
+
+        assert!(matches!(error, CatalogFailure::Conflict { .. }));
+        let stored = read_skill(&catalog_root.join("skills/shared-name")).unwrap();
+        assert_eq!(stored.document.metadata().name(), "first");
     }
 
     #[test]
@@ -1410,7 +1320,7 @@ mod tests {
         let updated_source = root.path().join("updated");
         write_skill(&original, "activity-test", "original body");
         write_skill(&updated_source, "activity-test", "updated body");
-        let mut catalog = SqliteCatalog::open(&database, &catalog_root).unwrap();
+        let mut catalog = PersistentCatalog::open(&database, &catalog_root).unwrap();
         let imported = catalog
             .import_local(&read_skill(&original).unwrap())
             .unwrap();
@@ -1440,61 +1350,17 @@ mod tests {
     }
 
     #[test]
-    fn recovery_preserves_unproven_paths_for_pending_rows() {
-        let root = tempdir().unwrap();
-        let database = root.path().join("state.sqlite3");
-        let catalog_root = root.path().join("catalog");
-        let source = root.path().join("source");
-        let skill_id = SkillId::new();
-        let final_path = catalog_root.join(skill_id.to_string());
-        let pending_path = catalog_root
-            .join(PENDING_DIRECTORY_NAME)
-            .join(skill_id.to_string());
-        let catalog = SqliteCatalog::open(&database, &catalog_root).unwrap();
-        catalog
-            .connection
-            .execute(
-                "INSERT INTO catalog_skills (
-                     skill_id, state, location, source_kind, source_path
-                 ) VALUES (?1, 'pending', ?2, 'local', ?3)",
-                params![
-                    skill_id.to_string(),
-                    encode_path(&final_path),
-                    encode_path(&source),
-                ],
-            )
-            .unwrap();
-        fs::create_dir_all(&pending_path).unwrap();
-        fs::write(pending_path.join("keep.txt"), "pending").unwrap();
-        fs::create_dir_all(&final_path).unwrap();
-        fs::write(final_path.join("keep.txt"), "final").unwrap();
-        drop(catalog);
-
-        let catalog = SqliteCatalog::open(&database, &catalog_root).unwrap();
-
-        assert_eq!(
-            fs::read_to_string(pending_path.join("keep.txt")).unwrap(),
-            "pending"
-        );
-        assert_eq!(
-            fs::read_to_string(final_path.join("keep.txt")).unwrap(),
-            "final"
-        );
-        assert!(catalog.catalog_rows("pending").unwrap().is_empty());
-    }
-
-    #[test]
-    fn recovery_preserves_unmanaged_staging_entries() {
+    fn cache_preserves_unmanaged_entries() {
         let root = tempdir().unwrap();
         let database = root.path().join("state.sqlite3");
         let catalog_root = root.path().join("catalog");
         let unmanaged = catalog_root
-            .join(PENDING_DIRECTORY_NAME)
+            .join(CACHE_DIRECTORY_NAME)
             .join("not-owned-by-yssskills");
         fs::create_dir_all(&unmanaged).unwrap();
         fs::write(unmanaged.join("data.txt"), "keep me").unwrap();
 
-        let _catalog = SqliteCatalog::open(&database, &catalog_root).unwrap();
+        let _catalog = PersistentCatalog::open(&database, &catalog_root).unwrap();
 
         assert_eq!(
             fs::read_to_string(unmanaged.join("data.txt")).unwrap(),
@@ -1509,7 +1375,7 @@ mod tests {
         let first_root = root.path().join("first");
         let second_root = root.path().join("second");
         fs::create_dir_all(&second_root).unwrap();
-        let mut catalog = SqliteCatalog::open(&database, &first_root).unwrap();
+        let mut catalog = PersistentCatalog::open(&database, &first_root).unwrap();
 
         catalog.set_catalog_root(second_root.clone()).unwrap();
         assert_eq!(catalog.catalog_root(), second_root);
