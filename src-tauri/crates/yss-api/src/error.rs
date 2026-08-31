@@ -7,8 +7,7 @@ use skill_local::LocalError;
 use skill_registry::{RegistryError, RetryAfter};
 use skill_workspace::{CatalogFailure, WorkspaceError};
 
-use crate::state::ApplicationWorkerError;
-use yss_api::{AgentConfigError, ApplicationError, PersistenceError};
+use crate::{AgentConfigError, ApplicationError, PersistenceError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,7 +54,7 @@ impl IpcError {
         self
     }
 
-    pub(crate) fn blocking_task_failed(reason: impl ToString) -> Self {
+    pub fn blocking_task_failed(reason: impl ToString) -> Self {
         Self::new(
             "application.blocking_task_failed",
             "A background operation stopped unexpectedly.",
@@ -64,30 +63,25 @@ impl IpcError {
         .retryable()
     }
 
-    pub(crate) fn invalid_request_payload(reason: impl ToString) -> Self {
+    pub fn invalid_request_payload(reason: impl ToString) -> Self {
         Self::new("request.invalid", "One or more request fields are invalid.")
             .with_context("reason", reason)
     }
-}
 
-impl From<ApplicationWorkerError> for IpcError {
-    fn from(error: ApplicationWorkerError) -> Self {
-        match error {
-            ApplicationWorkerError::Initialization(error)
-            | ApplicationWorkerError::Operation(error) => error.into(),
-            ApplicationWorkerError::Start(source) => Self::new(
-                "application.worker_start_failed",
-                "Unable to start the application worker.",
-            )
-            .with_context("reason", source),
-            ApplicationWorkerError::Unavailable | ApplicationWorkerError::ResponseDropped => {
-                Self::new(
-                    "application.worker_unavailable",
-                    "The application worker is unavailable.",
-                )
-                .retryable()
-            }
-        }
+    pub fn application_worker_start_failed(reason: impl ToString) -> Self {
+        Self::new(
+            "application.worker_start_failed",
+            "Unable to start the application worker.",
+        )
+        .with_context("reason", reason)
+    }
+
+    pub fn application_worker_unavailable() -> Self {
+        Self::new(
+            "application.worker_unavailable",
+            "The application worker is unavailable.",
+        )
+        .retryable()
     }
 }
 

@@ -27,7 +27,7 @@ where
     tauri::async_runtime::spawn_blocking(move || handle.execute(operation))
         .await
         .map_err(IpcError::blocking_task_failed)?
-        .map_err(Into::into)
+        .map_err(crate::ipc::map_application_worker_error)
 }
 
 #[cfg(test)]

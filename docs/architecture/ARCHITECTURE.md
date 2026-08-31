@@ -34,8 +34,8 @@ YssSkills 是一个通过 Tauri 提供桌面界面的 Skill 管理器。它需�
   errors；
 - `skill-workspace` 提供 Agents/Project/Linked Workspace 模型、目标解析、只读
   `observe`、中央库收敛式 `reconcile` 以及相应公开端口；
-- `yss-api` 提供 SQLite 中央 catalog/Workspace adapter 和 application workflow；根
-  `yssskills` package 暂保留专用 worker、显式 IPC DTO、结构化错误映射和 Tauri commands；
+- `yss-api` 提供 SQLite 中央 catalog/Workspace adapter、application workflow、显式 IPC DTO
+  和结构化错误映射；根 `yssskills` package 暂保留专用 worker 和 Tauri commands；
 - 前端 Dashboard、Skills、Workspaces、Registry、Settings 页面通过 application hooks 和
   typed services 调用真实 commands，所有业务 `invoke` 集中在 IPC client；
 - registry install、Workspace watcher 自动调度、周期性 reconcile、自定义
@@ -108,7 +108,7 @@ flowchart TD
 | `skill-local`     | `skill_local`     | 本机文件系统上的扫描、安装、监听和变化检测。                                            |
 | `skill-registry`  | `skill_registry`  | 远程 registry 的搜索/leaderboard 响应解析、source reference 和来源分类解析。            |
 | `skill-workspace` | `skill_workspace` | Agents/Project/Linked Workspace 及部署同步编排。                                        |
-| `yss-api`         | `yss_api`         | 面向前端用例的 application workflow、配置与 persistence adapter；不依赖 Tauri。         |
+| `yss-api`         | `yss_api`         | 面向前端的 workflow、DTO/error contract、配置与 persistence adapter；不依赖 Tauri。     |
 
 `skill-harness` 比单独使用 `harness` 更能表达它管理的是 Agent Skill Harness；
 `skill-workspace` 则避免与 Cargo workspace 概念混淆。当前 workspace member 以第
@@ -666,8 +666,9 @@ reconcile 或周期性 Workspace reconcile。显式 Sync 已接入中央库更�
 1. command 接收 JSON request envelope，并显式反序列化、拒绝未知字段和校验 IPC 输入；
 2. command 调用 application worker 或 registry blocking adapter；
 3. application layer 编排 Dashboard、catalog、Harness、Workspace 和 settings 用例；
-4. 将领域/应用结果映射为公开的 camelCase IPC DTO；
-5. 将 typed error 在边界统一映射为稳定的 IPC error DTO。
+4. 调用 `yss-api` 将领域/应用结果映射为公开的 camelCase IPC DTO；
+5. 复用 `yss-api` 的 typed error 到稳定 IPC error DTO 映射；根 `ipc` 只适配尚在 Tauri
+   package 内的 worker transport error。
 
 当前 commands 包括 Dashboard overview、catalog Skill list/detail/delete/export、local folder
 import scan/import、Workspace overview/detect-agents/add-detected-agents/delete-agents/create/

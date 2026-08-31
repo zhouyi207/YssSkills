@@ -12,15 +12,14 @@ use skill_workspace::{
     WorkspaceDiagnostic, WorkspaceKind, WorkspaceReport, WorkspaceResolution, WorkspaceTarget,
 };
 
-use crate::ipc::IpcError;
-use yss_api::{
+use crate::{
     AddDetectedAgentsOutcome, AgentDetectionDiagnostic, AgentDetectionOutcome, AppSettings,
     CatalogIndexFreshness, CatalogIndexRebuildOutcome, CatalogSkillDetail, CatalogSkillList,
     CatalogSkillSummary, CatalogSkillUpdateFailure, CatalogSkillUpdateFailureKind,
     CatalogSkillUpdateOutcome, CopyProjectAgentSkillsInput, CopyProjectAgentSkillsOutcome,
     CreateWorkspaceInput, CreateWorkspaceKind, DashboardOverview, DeleteAgentsOutcome,
     DeleteProjectAgentsOutcome, DetectedAgent, ExportSkillsOutcome, HarnessOverview, HarnessProbe,
-    ImportCandidate, ImportFolderDiagnostic, ImportFolderPreview, ImportSkillsOutcome,
+    ImportCandidate, ImportFolderDiagnostic, ImportFolderPreview, ImportSkillsOutcome, IpcError,
     ProjectAgentOverview, PropagationOutcome, SaveAgentInput, SaveAgentOutcome, SkillSetSummary,
     StoredWorkspace, WorkspaceObservation, WorkspaceReconcileOutcome, WorkspaceSummary,
     WorkspacesOverview,
@@ -895,8 +894,8 @@ impl From<DetectedAgent> for DetectedAgentDto {
 impl From<AgentDetectionDiagnostic> for AgentDetectionDiagnosticDto {
     fn from(value: AgentDetectionDiagnostic) -> Self {
         let error = match value.error {
-            yss_api::AgentDetectionError::Harness(error) => error.into(),
-            yss_api::AgentDetectionError::Local(error) => error.into(),
+            crate::AgentDetectionError::Harness(error) => error.into(),
+            crate::AgentDetectionError::Local(error) => error.into(),
         };
         Self {
             detector_id: value.detector_id.to_string(),
