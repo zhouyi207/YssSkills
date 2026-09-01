@@ -4,10 +4,12 @@
   <p><strong>轻量 Agent Skill 桌面管理器</strong></p>
   <p>集中浏览本地 Skills、组合式管理(添加/删除)本地 Skills，查看工作区状态，并发现远程 Skill。</p>
 
-  [![Publish](https://github.com/zhouyi207/YssSkills/actions/workflows/publish.yml/badge.svg)](https://github.com/zhouyi207/YssSkills/actions/workflows/publish.yml)
-  ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
-  ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
-  ![Rust](https://img.shields.io/badge/Rust-1.94-000000?logo=rust&logoColor=white)
+[![下载最新版本](https://img.shields.io/badge/下载最新版本-GitHub_Releases-2EA44F?style=for-the-badge&logo=github)](https://github.com/zhouyi207/YssSkills/releases)
+
+[![Publish](https://github.com/zhouyi207/YssSkills/actions/workflows/publish.yml/badge.svg)](https://github.com/zhouyi207/YssSkills/actions/workflows/publish.yml)
+![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
+![Rust](https://img.shields.io/badge/Rust-1.94-000000?logo=rust&logoColor=white)
 </div>
 
 > [!NOTE]
@@ -21,7 +23,11 @@
 - 🔎 搜索远程 Skill Registry 与排行榜
 - 💻 支持 Windows、macOS 和 Linux
 
-## 🚀 快速开始
+## 📦 下载安装
+
+前往 **[GitHub Releases](https://github.com/zhouyi207/YssSkills/releases)** 下载适用于 Windows、macOS 或 Linux 的最新安装包，并根据设备架构选择对应版本。
+
+## 🚀 本地开发
 
 环境要求：Node.js `22.22.0+`、pnpm `11.20.0`、Rust `1.94.0`。
 
@@ -34,12 +40,12 @@ pnpm dev
 
 ## 🛠️ 常用命令
 
-| 命令                | 用途             |
-| ------------------- | ---------------- |
-| `pnpm dev`          | 启动桌面应用     |
-| `pnpm build`        | 构建安装包       |
-| `pnpm test`         | 运行全部测试     |
-| `pnpm run ci`       | 执行完整质量检查 |
+| 命令          | 用途             |
+| ------------- | ---------------- |
+| `pnpm dev`    | 启动桌面应用     |
+| `pnpm build`  | 构建安装包       |
+| `pnpm test`   | 运行全部测试     |
+| `pnpm run ci` | 执行完整质量检查 |
 
 ## 🧱 技术栈
 
