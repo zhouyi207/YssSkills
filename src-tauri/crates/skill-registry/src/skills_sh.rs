@@ -617,7 +617,7 @@ fn parse_skill_value(
         kind,
         index,
     )?;
-    let skills_sh_url = parse_skills_sh_url(object, kind, index)?;
+    let skills_sh_url = parse_skills_sh_url(object, &id, kind, index)?;
     let rank = optional_u64(object, &["rank", "position"], kind, index)?;
 
     Ok(RemoteSkillSummary {
@@ -737,6 +737,7 @@ fn optional_u64(
 
 fn parse_skills_sh_url(
     object: &Map<String, Value>,
+    id: &RegistrySkillId,
     kind: ResponseKind,
     index: usize,
 ) -> Result<Option<String>, RegistryError> {
@@ -755,20 +756,48 @@ fn parse_skills_sh_url(
         });
     }
 
-    let Some(url) = object.get("url") else {
-        return Ok(None);
-    };
-    if url.is_null() {
-        return Ok(None);
+    if let Some(url) = object.get("url") {
+        if url.is_null() {
+            return Ok(Some(derived_skills_sh_url(id, kind, index)?));
+        }
+        let Some(url) = url.as_str() else {
+            return Err(RegistryError::InvalidResponse {
+                kind,
+                message: format!("skills[{index}].url must be a string"),
+            });
+        };
+        let url = url.trim();
+        if is_valid_skills_sh_url(url) {
+            return Ok(Some(url.to_owned()));
+        }
     }
-    let Some(url) = url.as_str() else {
-        return Err(RegistryError::InvalidResponse {
+
+    Ok(Some(derived_skills_sh_url(id, kind, index)?))
+}
+
+fn derived_skills_sh_url(
+    id: &RegistrySkillId,
+    kind: ResponseKind,
+    index: usize,
+) -> Result<String, RegistryError> {
+    let mut url =
+        Url::parse(DEFAULT_SKILLS_SH_BASE_URL).map_err(|_| RegistryError::InvalidResponse {
             kind,
-            message: format!("skills[{index}].url must be a string"),
-        });
-    };
-    let url = url.trim();
-    Ok(is_valid_skills_sh_url(url).then(|| url.to_owned()))
+            message: format!("skills[{index}] has an invalid skills.sh URL base"),
+        })?;
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| RegistryError::InvalidResponse {
+                kind,
+                message: format!("skills[{index}] has an invalid skills.sh URL path"),
+            })?;
+        for source_segment in id.source.split('/') {
+            segments.push(source_segment);
+        }
+        segments.push(&id.skill_id);
+    }
+    Ok(url.to_string())
 }
 
 fn is_valid_skills_sh_url(value: &str) -> bool {

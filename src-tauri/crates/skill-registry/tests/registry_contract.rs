@@ -703,12 +703,36 @@ fn leaderboard_parser_preserves_explicit_kind_without_guessing_github() {
 }
 
 #[test]
+fn skills_sh_url_uses_registry_identity_when_no_valid_url_is_available() {
+    let identity_only = br#"[
+        {"source":"vercel-labs/skills","skillId":"find-skills"}
+    ]"#;
+    let parsed = parse_search_response(identity_only).unwrap();
+    assert_eq!(
+        parsed.skills[0].skills_sh_url.as_deref(),
+        Some("https://skills.sh/vercel-labs/skills/find-skills")
+    );
+
+    let invalid_generic_url = br#"[
+        {"source":"acme/tools","skillId":"evil","url":"https://skills.sh.evil/redirect"}
+    ]"#;
+    let parsed = parse_search_response(invalid_generic_url).unwrap();
+    assert_eq!(
+        parsed.skills[0].skills_sh_url.as_deref(),
+        Some("https://skills.sh/acme/tools/evil")
+    );
+}
+
+#[test]
 fn skills_sh_url_requires_exact_https_host() {
     let fallback_malicious = br#"[
         {"source":"acme/tools","skillId":"evil","url":"https://skills.sh.evil/redirect"}
     ]"#;
     let parsed = parse_search_response(fallback_malicious).unwrap();
-    assert_eq!(parsed.skills[0].skills_sh_url, None);
+    assert_eq!(
+        parsed.skills[0].skills_sh_url.as_deref(),
+        Some("https://skills.sh/acme/tools/evil")
+    );
 
     let explicit_malicious = br#"[
         {"source":"acme/tools","skillId":"evil","skills_sh_url":"https://skills.sh.evil/redirect"}
