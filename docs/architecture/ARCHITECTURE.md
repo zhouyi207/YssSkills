@@ -366,7 +366,7 @@ adapter，接入 skills.sh 的查询和 Git/GitHub source reference 解析；它
   不从 HTML comment、属性值、JavaScript string/comment/regex 或任意 HTML/script 对象和数组猜测
   Skill。
   按 `(source, skill_id)` 去重，并保留显式 `source_kind`、`install_url`、官方标记和
-  skills.sh URL；缺失名称回退为 `skill_id`，缺失 installs 回退为零；
+  skills.sh URL；缺失有效显式 URL 时基于已验证的 `(source, skill_id)` 构造 canonical skills.sh 详情 URL；缺失名称回退为 `skill_id`，缺失 installs 回退为零；
 - `GitSource`、`parse_git_source` 和显式 known-branches resolver，支持 GitHub
   shorthand、GitHub tree branch/subpath 以及普通 generic HTTPS/SSH Git URL；URL 在解析或
   规范化前拒绝 percent-encoded path 数据和原始反斜杠，普通 `parse_git_source` 拒绝 HTTP、HTTPS
@@ -390,7 +390,8 @@ adapter，接入 skills.sh 的查询和 Git/GitHub source reference 解析；它
 当前没有公开或调用官方 `/api/v1` detail endpoint：仓库未确认稳定的 detail
 协议，因此没有伪造 detail、版本或未认证成功结果。search 和 leaderboard 已由根应用
 通过 `spawn_blocking` 接入 Tauri commands 和前端 service；详情按钮只打开 registry
-返回的受信 URL。若将来接入 detail endpoint，bearer 认证和 HTTP 401 必须在此边界
+adapter 返回的受信 skills.sh URL，响应缺失有效 URL 时由 adapter 基于 registry identity
+构造详情 URL；独立详情 WebView 在页面完成加载后才显示，避免把空白加载状态暴露给用户。若将来接入 detail endpoint，bearer 认证和 HTTP 401 必须在此边界
 保留为 `AuthenticationRequired`，响应必须解析为明确的结构化 detail，而不能降级为空
 结果。
 
@@ -830,7 +831,7 @@ Tauri boundary   → IPC Error DTO
 | `skill-harness`   | 各 Harness 的位置规则、检测结果、能力声明和自定义 adapter；使用 fake 环境，不依赖真实用户配置。                                                                                                                                                                                                                                                                                         |
 | `skill-local`     | 临时目录中的扫描、读取、hash、复制/平台 Link、缺失权限和外部变化；分别验证 Windows junction 与 macOS/Linux 符号链接实现，watcher 测试只覆盖归一化后的行为。                                                                                                                                                                                                                             |
 | `skill-index`     | filesystem-only rebuild、metadata skip、增删改 reconcile、无效 Skill 隔离、原子替换、索引删库恢复和不兼容 schema 安全重建。                                                                                                                                                                                                                                                             |
-| `skill-registry`  | skills.sh JSON/HTML 搜索与 leaderboard 解析（含明确 Next/RSC 容器、escaped payload、空/无效 envelope 和拒绝任意嵌入对象）、source kind 保留、GitHub/source reference 解析（含 drive/UNC/ref 字符和 HTTPS/SSH credential 安全）、URL/status/body-limit/Retry-After（delta/date）/transport kind/无效响应；使用 stdlib local HTTP seam，不依赖线上 registry。detail endpoint 当前未实现。 |
+| `skill-registry`  | skills.sh JSON/HTML 搜索与 leaderboard 解析（含明确 Next/RSC 容器、escaped payload、空/无效 envelope 和拒绝任意嵌入对象）、source kind 保留、GitHub/source reference 解析（含 drive/UNC/ref 字符和 HTTPS/SSH credential 安全）、URL/status/body-limit/Retry-After（delta/date）/transport kind/无效响应；使用 stdlib local HTTP seam，不依赖线上 registry；缺失有效详情 URL 时验证 identity 并构造 canonical skills.sh URL。detail endpoint 当前未实现。 |
 | `skill-workspace` | 三种 Workspace 的部署状态转换、marker 修改时间选优、中央库收敛、能力不支持和操作后再验证；通过 `LocalSkillPort`/`CentralCatalogPort` seam 验证。                                                                                                                                                                                                                                        |
 | `yss-api`         | Catalog/import/update、Set、Workspace、SQLite、worker lifecycle、request/response DTO 与一次性错误映射；通过 public façade 和内部 seam 测试，不启动 Tauri。                                                                                                                                                                                                                           |
 | `yssskills`       | Tauri startup、command 注册及 transport wrapper；业务行为由前端 service contract 与 `yss-api` 测试覆盖，不复制业务测试。                                                                                                                                                                                                                                                               |
