@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use tauri::Manager;
+use tauri::{webview::PageLoadEvent, Manager};
 use yss_api::YssApi;
 
 fn default_catalog_root(home_dir: &Path) -> PathBuf {
@@ -15,7 +15,18 @@ fn default_catalog_root(home_dir: &Path) -> PathBuf {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let result = tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+        .on_page_load(|webview, payload| {
+            if !webview.label().starts_with("registry-details-")
+                || payload.event() != PageLoadEvent::Finished
+            {
+                return;
+            }
+
+            let window = webview.window();
+            if let Err(error) = window.show().and_then(|_| window.set_focus()) {
+                eprintln!("failed to show registry details window: {error}");
+            }
+        })
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data = app.path().app_data_dir()?;

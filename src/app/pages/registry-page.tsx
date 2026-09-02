@@ -20,9 +20,9 @@ function registrySkillKey(skill: RegistrySkillSummaryDto) {
   return `${skill.id.source}\0${skill.id.skillId}`;
 }
 
-async function openRegistryDetails(detailsUrl: string) {
+async function openRegistryDetails(detailsUrl: string, title: string) {
   try {
-    await registryService.openDetails(detailsUrl);
+    await registryService.openDetails(detailsUrl, title);
   } catch (caught: unknown) {
     toast.error(formatUnknownError(caught, "Unable to open registry details."));
   }
@@ -89,7 +89,7 @@ function RegistrySkillList({ items }: { items: RegistrySkillSummaryDto[] }) {
               onClick={(event) => {
                 event.stopPropagation();
                 if (detailsUrl) {
-                  void openRegistryDetails(detailsUrl);
+                  void openRegistryDetails(detailsUrl, skill.name);
                 }
               }}
             >

@@ -1,7 +1,6 @@
 // @vitest-environment node
 
 import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { dashboardService } from "./dashboard-service";
@@ -14,12 +13,30 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
-vi.mock("@tauri-apps/plugin-opener", () => ({
-  openUrl: vi.fn(),
+const webviewWindowMocks = vi.hoisted(() => ({
+  constructor: vi.fn(),
+  getByLabel: vi.fn(),
+  once: vi.fn(),
+  setFocus: vi.fn(),
+  unlisten: vi.fn(),
 }));
 
+vi.mock("@tauri-apps/api/webviewWindow", () => {
+  class MockWebviewWindow {
+    static getByLabel = webviewWindowMocks.getByLabel;
+
+    constructor(...args: unknown[]) {
+      webviewWindowMocks.constructor(...args);
+    }
+
+    once = webviewWindowMocks.once;
+    setFocus = webviewWindowMocks.setFocus;
+  }
+
+  return { WebviewWindow: MockWebviewWindow };
+});
+
 const invokeMock = vi.mocked(invoke);
-const openUrlMock = vi.mocked(openUrl);
 
 const path = {
   value: "/catalog",
@@ -162,6 +179,16 @@ describe("IPC services", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     registryService.invalidateLeaderboardCache();
+    webviewWindowMocks.getByLabel.mockResolvedValue(null);
+    webviewWindowMocks.setFocus.mockResolvedValue(undefined);
+    webviewWindowMocks.once.mockImplementation(
+      (event: string, handler: (event: { payload?: unknown }) => void) => {
+        if (event === "tauri://created") {
+          handler({ payload: null });
+        }
+        return Promise.resolve(webviewWindowMocks.unlisten);
+      },
+    );
   });
 
   it("uses the backend command names and request envelope", async () => {
@@ -191,7 +218,6 @@ describe("IPC services", () => {
       .mockResolvedValueOnce(leaderboardResult)
       .mockResolvedValueOnce(settings)
       .mockResolvedValueOnce(settings);
-    openUrlMock.mockResolvedValueOnce(undefined);
 
     const skillRequest = { skillId: catalogSkill.id };
     const createSetRequest = { name: skillSet.name, skillIds: skillSet.skillIds };
@@ -244,7 +270,30 @@ describe("IPC services", () => {
       ["get_app_settings"],
       ["update_catalog_root", { request: settingsRequest }],
     ]);
-    expect(openUrlMock).toHaveBeenCalledWith("https://skills.sh/example");
+    expect(webviewWindowMocks.constructor).toHaveBeenCalledWith(
+      expect.stringMatching(/^registry-details-/),
+      expect.objectContaining({
+        title: "Registry details",
+        url: "https://skills.sh/example",
+        width: 1_000,
+        height: 700,
+        resizable: true,
+        visible: false,
+        focus: false,
+      }),
+    );
+  });
+
+  it("reuses an existing registry webview window and focuses it", async () => {
+    const existingWindow = {
+      setFocus: vi.fn().mockResolvedValue(undefined),
+    };
+    webviewWindowMocks.getByLabel.mockResolvedValueOnce(existingWindow);
+
+    await registryService.openDetails("https://skills.sh/example");
+
+    expect(existingWindow.setFocus).toHaveBeenCalledOnce();
+    expect(webviewWindowMocks.constructor).not.toHaveBeenCalled();
   });
 
   it("maps a strictly invalid response to ipc.invalid_response", async () => {
